@@ -154,15 +154,26 @@ impl NoiseSchedule {
 
 #[derive(Clone)]
 pub struct DiffusionDataset {
-    items: Vec<DiffusionItem>,
+    pub items: Vec<DiffusionItem>,
     pub tokenizer: TextTokenizer,
 }
 
 impl DiffusionDataset {
+    /// Create a new DiffusionDataset
+    ///
+    /// # Arguments
+    /// * `json_dir` - Directory containing JSON metadata files
+    /// * `image_dir` - Directory containing images
+    /// * `tokenizer_path` - Path to tokenizer file
+    /// * `max_samples` - Maximum number of image samples to load (None = load all)
+    ///
+    /// Note: Each JSON file contains ~1000 images. The loader will determine
+    /// how many JSON files to load based on max_samples.
     pub fn new(
         json_dir: &str,
         image_dir: &str,
         tokenizer_path: &str,
+        max_samples: Option<usize>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut items = Vec::new();
         let json_path = Path::new(json_dir);
@@ -173,7 +184,7 @@ impl DiffusionDataset {
         println!("Tokenizer loaded. Vocabulary size: {}", tokenizer.vocab_size());
 
         // Read all JSON files
-        let json_files: Vec<_> = fs::read_dir(json_path)?
+        let mut json_files: Vec<_> = fs::read_dir(json_path)?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .filter(|path| {
@@ -184,13 +195,38 @@ impl DiffusionDataset {
             })
             .collect();
 
-        println!("Loading {} JSON files...", json_files.len());
+        // Sort to ensure consistent ordering
+        json_files.sort();
 
-        for json_file in json_files {
+        // Calculate how many files we need based on max_samples
+        // Assume ~1000 items per JSON file
+        const APPROX_ITEMS_PER_JSON: usize = 1000;
+        let files_needed = if let Some(max) = max_samples {
+            ((max + APPROX_ITEMS_PER_JSON - 1) / APPROX_ITEMS_PER_JSON).min(json_files.len())
+        } else {
+            json_files.len()
+        };
+
+        let json_files_to_load = &json_files[..files_needed];
+
+        if let Some(max) = max_samples {
+            println!("Loading up to {} samples from {} JSON files...", max, files_needed);
+        } else {
+            println!("Loading all samples from {} JSON files...", files_needed);
+        }
+
+        for json_file in json_files_to_load {
             let content = fs::read_to_string(&json_file)?;
             let data: HashMap<String, ImageMetadataJson> = serde_json::from_str(&content)?;
 
             for (image_filename, metadata_json) in data {
+                // Check if we've reached the max_samples limit
+                if let Some(max) = max_samples {
+                    if items.len() >= max {
+                        break;
+                    }
+                }
+
                 let image_path = Path::new(image_dir).join(&image_filename);
 
                 // Only add if image exists
@@ -205,6 +241,13 @@ impl DiffusionDataset {
                             sampler: metadata_json.sa,
                         },
                     });
+                }
+            }
+
+            // Early exit if we've loaded enough
+            if let Some(max) = max_samples {
+                if items.len() >= max {
+                    break;
                 }
             }
         }
@@ -228,6 +271,7 @@ impl Dataset<DiffusionItem> for DiffusionDataset {
         self.items.len()
     }
 }
+
 
 // ============================================================================
 // Batch Structure
@@ -313,6 +357,8 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
         let mut text_tokens_vec = Vec::new();
         let mut text_mask_vec = Vec::new();
         let mut timesteps_vec = Vec::new();
+
+        println!("Items length: {:?}", items.len());
 
         for item in items {
             // Load image

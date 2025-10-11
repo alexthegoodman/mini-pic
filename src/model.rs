@@ -21,7 +21,7 @@ use burn::{
 // Constants
 // ============================================================================
 
-const TIME_EMBED_DIM: usize = 128;
+// TIME_EMBED_DIM is now configurable via UNetConfig
 
 // ============================================================================
 // Time Embedding (Sinusoidal Position Embeddings)
@@ -31,17 +31,19 @@ const TIME_EMBED_DIM: usize = 128;
 pub struct TimeEmbedding<B: Backend> {
     mlp: Linear<B>,
     activation: Gelu,
+    time_embed_dim: usize,
 }
 
 impl<B: Backend> TimeEmbedding<B> {
-    pub fn new(device: &B::Device) -> Self {
-        let mlp = LinearConfig::new(TIME_EMBED_DIM, TIME_EMBED_DIM * 4)
+    pub fn new(time_embed_dim: usize, device: &B::Device) -> Self {
+        let mlp = LinearConfig::new(time_embed_dim, time_embed_dim * 4)
             .with_bias(true)
             .init(device);
 
         Self {
             mlp,
             activation: Gelu::new(),
+            time_embed_dim,
         }
     }
 
@@ -51,7 +53,7 @@ impl<B: Backend> TimeEmbedding<B> {
         let device = timesteps.device();
 
         // Generate frequency bands
-        let half_dim = TIME_EMBED_DIM / 2;
+        let half_dim = self.time_embed_dim / 2;
         let emb_scale = (10000.0_f32).ln() / (half_dim as f32 - 1.0);
 
         let mut frequencies = Vec::new();
@@ -71,7 +73,7 @@ impl<B: Backend> TimeEmbedding<B> {
         let cos_emb = args.cos();
 
         // Concatenate [sin, cos]
-        let emb = Tensor::cat(vec![sin_emb, cos_emb], 1); // [batch_size, TIME_EMBED_DIM]
+        let emb = Tensor::cat(vec![sin_emb, cos_emb], 1); // [batch_size, time_embed_dim]
 
         // Pass through MLP
         let emb = self.mlp.forward(emb);
@@ -372,7 +374,7 @@ impl<B: Backend> AttentionBlock<B> {
 #[derive(Module, Debug)]
 pub struct DownBlock<B: Backend> {
     resnet1: ResNetBlock<B>,
-    resnet2: ResNetBlock<B>,
+    resnet2: Option<ResNetBlock<B>>,
     attn: Option<AttentionBlock<B>>,
     downsample: Option<Conv2d<B>>,
 }
@@ -385,10 +387,15 @@ impl<B: Backend> DownBlock<B> {
         context_dim: usize,
         use_attn: bool,
         downsample: bool,
+        num_resnet_blocks: usize,
         device: &B::Device,
     ) -> Self {
         let resnet1 = ResNetBlock::new(in_channels, out_channels, time_emb_dim, device);
-        let resnet2 = ResNetBlock::new(out_channels, out_channels, time_emb_dim, device);
+        let resnet2 = if num_resnet_blocks > 1 {
+            Some(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device))
+        } else {
+            None
+        };
 
         let attn = if use_attn {
             Some(AttentionBlock::new(out_channels, context_dim, 4, device))
@@ -422,7 +429,10 @@ impl<B: Backend> DownBlock<B> {
         context: Tensor<B, 3>,
     ) -> (Tensor<B, 4>, Tensor<B, 4>) {
         let mut h = self.resnet1.forward(x, time_emb.clone());
-        h = self.resnet2.forward(h, time_emb);
+
+        if let Some(ref resnet2) = self.resnet2 {
+            h = resnet2.forward(h, time_emb);
+        }
 
         if let Some(ref attn) = self.attn {
             h = attn.forward(h, context);
@@ -443,8 +453,8 @@ impl<B: Backend> DownBlock<B> {
 #[derive(Module, Debug)]
 pub struct UpBlock<B: Backend> {
     resnet1: ResNetBlock<B>,
-    resnet2: ResNetBlock<B>,
-    resnet3: ResNetBlock<B>,
+    resnet2: Option<ResNetBlock<B>>,
+    resnet3: Option<ResNetBlock<B>>,
     attn: Option<AttentionBlock<B>>,
     upsample: Option<Conv2d<B>>,
 }
@@ -457,11 +467,20 @@ impl<B: Backend> UpBlock<B> {
         context_dim: usize,
         use_attn: bool,
         upsample: bool,
+        num_resnet_blocks: usize,
         device: &B::Device,
     ) -> Self {
         let resnet1 = ResNetBlock::new(in_channels + out_channels, out_channels, time_emb_dim, device);
-        let resnet2 = ResNetBlock::new(out_channels, out_channels, time_emb_dim, device);
-        let resnet3 = ResNetBlock::new(out_channels, out_channels, time_emb_dim, device);
+        let resnet2 = if num_resnet_blocks > 1 {
+            Some(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device))
+        } else {
+            None
+        };
+        let resnet3 = if num_resnet_blocks > 2 {
+            Some(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device))
+        } else {
+            None
+        };
 
         let attn = if use_attn {
             Some(AttentionBlock::new(out_channels, context_dim, 4, device))
@@ -501,8 +520,14 @@ impl<B: Backend> UpBlock<B> {
         let h = Tensor::cat(vec![x, skip], 1);
 
         let mut h = self.resnet1.forward(h, time_emb.clone());
-        h = self.resnet2.forward(h, time_emb.clone());
-        h = self.resnet3.forward(h, time_emb);
+
+        if let Some(ref resnet2) = self.resnet2 {
+            h = resnet2.forward(h, time_emb.clone());
+        }
+
+        if let Some(ref resnet3) = self.resnet3 {
+            h = resnet3.forward(h, time_emb);
+        }
 
         if let Some(ref attn) = self.attn {
             h = attn.forward(h, context);
@@ -544,7 +569,7 @@ pub struct UNet<B: Backend> {
 
     // Bottleneck
     mid_block1: ResNetBlock<B>,
-    mid_attn: AttentionBlock<B>,
+    mid_attn: Option<AttentionBlock<B>>,
     mid_block2: ResNetBlock<B>,
 
     // Decoder
@@ -562,27 +587,34 @@ pub struct UNet<B: Backend> {
 pub struct UNetConfig {
     #[config(default = 8192)]
     pub vocab_size: usize,
-    #[config(default = 256)]
+    // #[config(default = 256)]
+    #[config(default = 32)]
     pub text_embed_dim: usize,
+    #[config(default = 32)]
+    pub time_embed_dim: usize,
+    #[config(default = false)]
+    pub use_mid_attn: bool,
+    #[config(default = 1)]
+    pub resnet_blocks_per_level: usize,  // 1 or 2 ResNet blocks per down/up level
     pub channels: Vec<usize>,
 }
 
 impl Default for UNetConfig {
     fn default() -> Self {
-        Self::new(vec![64, 128, 256])
+        Self::new(vec![16, 32, 64])
     }
 }
 
 impl UNetConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> UNet<B> {
-        let time_emb_dim = TIME_EMBED_DIM * 4;
+        let time_emb_dim = self.time_embed_dim * 4;
 
         // Text encoder
         let text_embedding = EmbeddingConfig::new(self.vocab_size, self.text_embed_dim).init(device);
         let text_encoder = LinearConfig::new(self.text_embed_dim, self.text_embed_dim).init(device);
 
         // Time embedding
-        let time_embedding = TimeEmbedding::new(device);
+        let time_embedding = TimeEmbedding::new(self.time_embed_dim, device);
 
         // Initial conv
         let conv_in = Conv2dConfig::new([IMAGE_CHANNELS, self.channels[0]], [3, 3])
@@ -595,8 +627,9 @@ impl UNetConfig {
             self.channels[0],
             time_emb_dim,
             self.text_embed_dim,
-            false,
+            false, // use_attn
             true,
+            self.resnet_blocks_per_level,
             device,
         );
         let down2 = DownBlock::new(
@@ -604,8 +637,9 @@ impl UNetConfig {
             self.channels[1],
             time_emb_dim,
             self.text_embed_dim,
+            false, // use_attn
             true,
-            true,
+            self.resnet_blocks_per_level,
             device,
         );
         let down3 = DownBlock::new(
@@ -613,14 +647,19 @@ impl UNetConfig {
             self.channels[2],
             time_emb_dim,
             self.text_embed_dim,
-            true,
+            false, // use_attn
             false,
+            self.resnet_blocks_per_level,
             device,
         );
 
         // Bottleneck at 16x16
         let mid_block1 = ResNetBlock::new(self.channels[2], self.channels[2], time_emb_dim, device);
-        let mid_attn = AttentionBlock::new(self.channels[2], self.text_embed_dim, 4, device);
+        let mid_attn = if self.use_mid_attn {
+            Some(AttentionBlock::new(self.channels[2], self.text_embed_dim, 4, device))
+        } else {
+            None
+        };
         let mid_block2 = ResNetBlock::new(self.channels[2], self.channels[2], time_emb_dim, device);
 
         // Up blocks
@@ -629,8 +668,9 @@ impl UNetConfig {
             self.channels[1],
             time_emb_dim,
             self.text_embed_dim,
+            false, // use_attn
             true,
-            true,
+            self.resnet_blocks_per_level,
             device,
         );
         let up2 = UpBlock::new(
@@ -638,8 +678,9 @@ impl UNetConfig {
             self.channels[0],
             time_emb_dim,
             self.text_embed_dim,
+            false, // use_attn
             true,
-            true,
+            self.resnet_blocks_per_level,
             device,
         );
         let up3 = UpBlock::new(
@@ -647,8 +688,9 @@ impl UNetConfig {
             self.channels[0],
             time_emb_dim,
             self.text_embed_dim,
+            false, // use_attn
             false,
-            false,
+            self.resnet_blocks_per_level,
             device,
         );
 
@@ -703,7 +745,9 @@ impl<B: Backend> UNet<B> {
 
         // Bottleneck
         let mut h = self.mid_block1.forward(h3, time_emb.clone());
-        h = self.mid_attn.forward(h, text_context.clone());
+        if let Some(ref attn) = self.mid_attn {
+            h = attn.forward(h, text_context.clone());
+        }
         h = self.mid_block2.forward(h, time_emb.clone());
 
         // Decoder
@@ -719,11 +763,13 @@ impl<B: Backend> UNet<B> {
 
     pub fn forward_step(&self, batch: DiffusionBatch<B>) -> RegressionOutput<B> {
         // Predict noise
-        let predicted_noise = self.forward(
-            batch.noisy_images.clone(),
-            batch.timesteps.clone(),
-            batch.text_tokens.clone(),
-        );
+        // let predicted_noise = self.forward(
+        //     batch.noisy_images.clone(),
+        //     batch.timesteps.clone(),
+        //     batch.text_tokens.clone(),
+        // );
+        let device = &self.devices()[0];
+        let predicted_noise: Tensor<B, 4> = Tensor::empty([0, 2, 3, 4], device);
 
         // MSE loss between predicted noise and actual noise
         let loss = MseLoss::new().forward(
