@@ -1,3 +1,5 @@
+#![recursion_limit="256"] // for wgpu?
+
 pub mod dataset;
 pub mod inference;
 pub mod interface;
