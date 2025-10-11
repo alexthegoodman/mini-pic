@@ -1,7 +1,7 @@
 use burn::{backend::Autodiff, tensor::backend::Backend};
-use common_motion_2d_reg::{
-    inference::{self, CommonMotionInference},
-    interface::load_common_motion_2d,
+use mini_pic::{
+    inference::{self, DiffusionInference},
+    // interface::load_common_motion_2d,
     training,
 };
 
