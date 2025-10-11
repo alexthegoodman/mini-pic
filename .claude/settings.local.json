@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/projects/common/image-gen/diffusiondb/unzipped-json/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

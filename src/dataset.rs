@@ -150,6 +150,7 @@ impl NoiseSchedule {
 // Dataset
 // ============================================================================
 
+#[derive(Clone)]
 pub struct DiffusionDataset {
     items: Vec<DiffusionItem>,
     pub tokenizer: TextTokenizer,
