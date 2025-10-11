@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn process_image(input_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn process_image(input_path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load the image
     let img = image::open(input_path)?;
 
