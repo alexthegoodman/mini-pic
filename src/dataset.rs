@@ -1,6 +1,6 @@
 use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
-    tensor::{backend::Backend, Tensor},
+    tensor::{backend::Backend, Int, Tensor},
 };
 use image::GenericImageView;
 use rand::Rng;
@@ -57,7 +57,8 @@ pub struct TextTokenizer {
 
 impl TextTokenizer {
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let tokenizer = Tokenizer::from_file(path)?;
+        let tokenizer = Tokenizer::from_file(path)
+            .map_err(|e| format!("Failed to load tokenizer: {:?}", e))?;
         let pad_token_id = tokenizer
             .token_to_id("[PAD]")
             .ok_or("PAD token not found in tokenizer")?;
@@ -69,7 +70,8 @@ impl TextTokenizer {
     }
 
     pub fn encode(&self, text: &str, max_len: usize) -> Result<(Vec<u32>, Vec<bool>), Box<dyn std::error::Error>> {
-        let encoding = self.tokenizer.encode(text, false)?;
+        let encoding = self.tokenizer.encode(text, false)
+            .map_err(|e| format!("Failed to encode text: {:?}", e))?;
         let mut ids = encoding.get_ids().to_vec();
         let mut mask = vec![true; ids.len()];
 
@@ -301,8 +303,8 @@ impl<B: Backend> DiffusionBatcher<B> {
     }
 }
 
-impl<B: Backend> Batcher<DiffusionItem, DiffusionBatch<B>> for DiffusionBatcher<B> {
-    fn batch(&self, items: Vec<DiffusionItem>) -> DiffusionBatch<B> {
+impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatcher<B> {
+    fn batch(&self, items: Vec<DiffusionItem>, device: &B::Device) -> DiffusionBatch<B> {
         let batch_size = items.len();
         let mut rng = rand::thread_rng();
 
@@ -337,24 +339,24 @@ impl<B: Backend> Batcher<DiffusionItem, DiffusionBatch<B>> for DiffusionBatcher<
         }
 
         // Create tensors
-        let images = Tensor::<B, 1>::from_floats(all_images.as_slice(), &self.device)
+        let images = Tensor::<B, 1>::from_floats(all_images.as_slice(), device)
             .reshape([batch_size, IMAGE_CHANNELS, IMAGE_SIZE, IMAGE_SIZE]);
 
-        let text_tokens = Tensor::<B, 1>::from_ints(
+        let text_tokens = Tensor::<B, 1, Int>::from_ints(
             text_tokens_vec
                 .iter()
                 .map(|&x| x as i32)
                 .collect::<Vec<_>>()
                 .as_slice(),
-            &self.device,
+            device,
         )
         .reshape([batch_size, MAX_SEQ_LEN]);
 
-        let text_mask = Tensor::<B, 1>::from_floats(text_mask_vec.as_slice(), &self.device)
+        let text_mask = Tensor::<B, 1>::from_floats(text_mask_vec.as_slice(), device)
             .reshape([batch_size, MAX_SEQ_LEN]);
 
         let timesteps =
-            Tensor::<B, 1>::from_ints(timesteps_vec.as_slice(), &self.device).float();
+            Tensor::<B, 1, Int>::from_ints(timesteps_vec.as_slice(), device).float();
 
         // Generate noise and apply to images
         let noise = Tensor::<B, 4>::random_like(&images, burn::tensor::Distribution::Normal(0.0, 1.0));
@@ -378,7 +380,7 @@ impl<B: Backend> Batcher<DiffusionItem, DiffusionBatch<B>> for DiffusionBatcher<
             }
         }
 
-        let noisy_images = Tensor::<B, 1>::from_floats(noisy_images_data.as_slice(), &self.device)
+        let noisy_images = Tensor::<B, 1>::from_floats(noisy_images_data.as_slice(), device)
             .reshape([batch_size, IMAGE_CHANNELS, IMAGE_SIZE, IMAGE_SIZE]);
 
         DiffusionBatch {

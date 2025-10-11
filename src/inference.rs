@@ -1,170 +1,266 @@
 use burn::{
-    data::{dataloader::batcher::Batcher, dataset::Dataset},
     module::Module,
-    record::{BinBytesRecorder, FullPrecisionSettings, NoStdTrainingRecorder, Recorder},
-    tensor::backend::Backend,
+    record::{NoStdTrainingRecorder, Recorder},
+    tensor::{backend::Backend, Distribution, Int, Tensor},
 };
-// use rgb::RGB8;
-// use textplots::{Chart, ColorPlot, Shape};
 
 use crate::{
-    dataset::{KeyframeBatcher, KeyframeItem, MotionDataset, Normalizer, NUM_FEATURES},
-    model::{RnnModel, RnnModelConfig, RnnModelRecord},
+    dataset::{NoiseSchedule, TextTokenizer, IMAGE_CHANNELS, IMAGE_SIZE, MAX_SEQ_LEN, NUM_TIMESTEPS},
+    model::{UNet, UNetConfig},
 };
 
-pub struct CommonMotionInference<B: Backend> {
-    pub model: RnnModel<B>,
-    pub batcher: KeyframeBatcher<B>,
+/// Inference engine for diffusion-based image generation
+pub struct DiffusionInference<B: Backend> {
+    pub model: UNet<B>,
+    pub tokenizer: TextTokenizer,
+    pub noise_schedule: NoiseSchedule,
+    pub device: B::Device,
 }
 
-impl<B: Backend> CommonMotionInference<B> {
-    pub fn new(device: B::Device) -> CommonMotionInference<B> {
+impl<B: Backend> DiffusionInference<B> {
+    /// Load a trained diffusion model from a checkpoint
+    pub fn new(
+        model_path: &str,
+        tokenizer_path: &str,
+        device: B::Device,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        // Load tokenizer
+        println!("Loading tokenizer from {}...", tokenizer_path);
+        let tokenizer = TextTokenizer::from_file(tokenizer_path)?;
+        let vocab_size = tokenizer.vocab_size();
 
-        // can load bytes later, dynamic for now
-        let record: RnnModelRecord<B> = NoStdTrainingRecorder::new()
-            .load(format!("{artifact_dir}/model").into(), &device)
-            .expect("Trained model should exist; run train first");
-            
-        // Embed the model file directly in the binary
-        // const MODEL_BYTES: &[u8] =
-        //     include_bytes!("D:/tmp/cm-2d-vae-lstm-attn-stretch-dir-b1/model.bin");
+        // Initialize model config with correct vocab size
+        let model_config = UNetConfig::new()
+            .with_vocab_size(vocab_size)
+            .with_text_embed_dim(256)
+            .with_channels(vec![64, 128, 256]);
 
-        // let record: RnnModelRecord<B> = BinBytesRecorder::<FullPrecisionSettings>::default()
-        //     .load(MODEL_BYTES.to_vec(), &device)
-        //     // .load(format!("{artifact_dir}/model").into(), &device)
-        //     .expect("Trained model should exist; run train first");
+        // Load trained model
+        println!("Loading model from {}...", model_path);
+        let record = NoStdTrainingRecorder::new()
+            .load(model_path.into(), &device)
+            .expect("Failed to load trained model");
 
-        let model = RnnModelConfig::new().init(&device).load_record(record);
+        let model = model_config.init(&device).load_record(record);
 
-        let batcher = KeyframeBatcher::new(device);
+        // Initialize noise schedule
+        let noise_schedule = NoiseSchedule::linear(NUM_TIMESTEPS, 0.0001, 0.02);
 
-        Self { model, batcher }
+        println!("Model loaded successfully!");
+
+        Ok(Self {
+            model,
+            tokenizer,
+            noise_schedule,
+            device,
+        })
     }
 
-    pub fn infer(&self, user_prompt: String) -> Vec<f32> {
-        // Use a sample of 1000 items from the test split
-        // let dataset = MotionDataset::test();
-        // let items: Vec<KeyframeItem> = dataset.iter().take(1000).collect();
+    /// Generate an image from a text prompt using DDPM sampling
+    pub fn generate(
+        &self,
+        prompt: &str,
+        num_inference_steps: usize,
+        guidance_scale: f32,
+    ) -> Tensor<B, 4> {
+        println!("Generating image for prompt: \"{}\"", prompt);
 
-        // inputs / prompts
-        let mut prompts = Vec::new();
-        // prompts.push(
-        //     "0, 5, 361, 161, 305, 217, \n1, 5, 232, 332, 50, 70, \n2, 5, 149, 149, 304, 116, "
-        //         .to_string(),
-        // );
-        // prompts.push("0, 5, 354, 154, 239, 91, \n1, 5, 544, 244, 106, 240, ".to_string());
-        // prompts.push(
-        //     "0, 5, 161, 161, 210, 168, \n1, 5, 165, 265, 189, 262, \n2, 5, 112, 212, 439, 266, \n3, 5, 152, 152, 462, 163, ".to_string()
-        // );
-        prompts.push(user_prompt);
+        // Tokenize prompt
+        let (tokens, _mask) = self
+            .tokenizer
+            .encode(prompt, MAX_SEQ_LEN)
+            .expect("Failed to tokenize prompt");
 
-        let mut items: Vec<Vec<KeyframeItem>> = Vec::new();
+        // Convert to tensor [1, MAX_SEQ_LEN]
+        let text_tokens = Tensor::<B, 1, Int>::from_ints(
+            tokens.iter().map(|&x| x as i32).collect::<Vec<_>>().as_slice(),
+            &self.device,
+        )
+        .reshape([1, MAX_SEQ_LEN]);
 
+        // Start from pure noise [1, 3, 64, 64]
+        let mut x = Tensor::<B, 4>::random(
+            [1, IMAGE_CHANNELS, IMAGE_SIZE, IMAGE_SIZE],
+            Distribution::Normal(0.0, 1.0),
+            &self.device,
+        );
+
+        // DDPM reverse diffusion process
+        let step_size = NUM_TIMESTEPS / num_inference_steps;
+
+        for step in (0..NUM_TIMESTEPS).step_by(step_size).rev() {
+            let t = step;
+            let timestep = Tensor::<B, 1>::from_floats([t as f32], &self.device);
+
+            // Predict noise
+            let predicted_noise = self.model.forward(
+                x.clone(),
+                timestep,
+                text_tokens.clone(),
+            );
+
+            // Compute denoising step
+            let alpha = self.noise_schedule.alphas[t];
+            let alpha_bar = self.noise_schedule.alpha_bars[t];
+            let beta = self.noise_schedule.betas[t];
+
+            // x_{t-1} = (1 / sqrt(alpha_t)) * (x_t - (beta_t / sqrt(1 - alpha_bar_t)) * noise_pred)
+            let coef1 = 1.0 / alpha.sqrt();
+            let coef2 = beta / (1.0 - alpha_bar).sqrt();
+
+            x = (x - predicted_noise * coef2) * coef1;
+
+            // Add noise if not the final step
+            if t > 0 {
+                let noise = Tensor::<B, 4>::random_like(&x, Distribution::Normal(0.0, 1.0));
+                let sigma = beta.sqrt();
+                x = x + noise * sigma;
+            }
+
+            if step % 100 == 0 {
+                println!("Denoising step {}/{}", NUM_TIMESTEPS - step, NUM_TIMESTEPS);
+            }
+        }
+
+        // Clamp to [-1, 1]
+        x = x.clamp(-1.0, 1.0);
+
+        println!("Generation complete!");
+        x
+    }
+
+    /// Generate multiple images from a prompt
+    pub fn generate_batch(
+        &self,
+        prompts: &[String],
+        num_inference_steps: usize,
+        guidance_scale: f32,
+    ) -> Tensor<B, 4> {
+        let batch_size = prompts.len();
+        println!("Generating {} images...", batch_size);
+
+        // Tokenize all prompts
+        let mut all_tokens = Vec::new();
         for prompt in prompts {
-            let mut sequence = Vec::new();
-            for line in prompt.lines() {
-                let values: Vec<f32> = line
-                    .split(',')
-                    .filter_map(|v| v.trim().parse().ok())
-                    .collect();
+            let (tokens, _mask) = self
+                .tokenizer
+                .encode(prompt, MAX_SEQ_LEN)
+                .expect("Failed to tokenize prompt");
+            all_tokens.extend(tokens.iter().map(|&x| x as i32));
+        }
 
-                if values.len() == NUM_FEATURES {
-                    sequence.push(KeyframeItem {
-                        polygon_index: values[0],
-                        time: values[1],
-                        width: values[2],
-                        height: values[3],
-                        x: values[4],
-                        y: values[5],
-                        direction: values[6],
-                    });
+        // Convert to tensor [batch_size, MAX_SEQ_LEN]
+        let text_tokens = Tensor::<B, 1, Int>::from_ints(all_tokens.as_slice(), &self.device)
+            .reshape([batch_size, MAX_SEQ_LEN]);
+
+        // Start from pure noise [batch_size, 3, 64, 64]
+        let mut x = Tensor::<B, 4>::random(
+            [batch_size, IMAGE_CHANNELS, IMAGE_SIZE, IMAGE_SIZE],
+            Distribution::Normal(0.0, 1.0),
+            &self.device,
+        );
+
+        // DDPM reverse diffusion process
+        let step_size = NUM_TIMESTEPS / num_inference_steps;
+
+        for step in (0..NUM_TIMESTEPS).step_by(step_size).rev() {
+            let t = step;
+            let timesteps = Tensor::<B, 1>::from_floats(
+                vec![t as f32; batch_size].as_slice(),
+                &self.device,
+            );
+
+            // Predict noise
+            let predicted_noise = self.model.forward(
+                x.clone(),
+                timesteps,
+                text_tokens.clone(),
+            );
+
+            // Compute denoising step
+            let alpha = self.noise_schedule.alphas[t];
+            let alpha_bar = self.noise_schedule.alpha_bars[t];
+            let beta = self.noise_schedule.betas[t];
+
+            let coef1 = 1.0 / alpha.sqrt();
+            let coef2 = beta / (1.0 - alpha_bar).sqrt();
+
+            x = (x - predicted_noise * coef2) * coef1;
+
+            // Add noise if not the final step
+            if t > 0 {
+                let noise = Tensor::<B, 4>::random_like(&x, Distribution::Normal(0.0, 1.0));
+                let sigma = beta.sqrt();
+                x = x + noise * sigma;
+            }
+
+            if step % 100 == 0 {
+                println!("Denoising step {}/{}", NUM_TIMESTEPS - step, NUM_TIMESTEPS);
+            }
+        }
+
+        // Clamp to [-1, 1]
+        x = x.clamp(-1.0, 1.0);
+
+        println!("Batch generation complete!");
+        x
+    }
+
+    /// Save generated image tensor to a file
+    /// Converts from [-1, 1] range to [0, 255] RGB
+    pub fn save_image(image_tensor: Tensor<B, 4>, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Assuming image_tensor is [1, 3, 64, 64] in CHW format
+        let [_batch, channels, height, width] = image_tensor.dims();
+
+        if channels != 3 || height != IMAGE_SIZE || width != IMAGE_SIZE {
+            return Err("Invalid image dimensions".into());
+        }
+
+        // Convert to [0, 255] range
+        let image_data = ((image_tensor.clone() + 1.0) * 127.5)
+            .clamp(0.0, 255.0)
+            .into_data()
+            .convert::<f32>()
+            .to_vec()
+            .expect("Failed to convert tensor to vec");
+
+        // Convert from CHW to HWC format
+        let mut rgb_data = vec![0u8; IMAGE_SIZE * IMAGE_SIZE * 3];
+        for c in 0..3 {
+            for h in 0..IMAGE_SIZE {
+                for w in 0..IMAGE_SIZE {
+                    let chw_idx = c * (IMAGE_SIZE * IMAGE_SIZE) + h * IMAGE_SIZE + w;
+                    let hwc_idx = (h * IMAGE_SIZE + w) * 3 + c;
+                    rgb_data[hwc_idx] = image_data[chw_idx] as u8;
                 }
             }
-            items.push(sequence);
         }
 
-        let mut target_items: Vec<Vec<KeyframeItem>> = Vec::new();
+        // Save using image crate
+        image::save_buffer(
+            path,
+            &rgb_data,
+            IMAGE_SIZE as u32,
+            IMAGE_SIZE as u32,
+            image::ColorType::Rgb8,
+        )?;
 
-        // Generate target sequences based on prompt length
-        for sequence in &items {
-            let prompt_len = sequence.len();
-            let target_len = prompt_len * 6; // Each input row generates 6 target rows
-
-            let mut target_sequence = Vec::with_capacity(target_len);
-            for _ in 0..target_len {
-                target_sequence.push(KeyframeItem {
-                    polygon_index: 0.0,
-                    time: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                    x: 0.0,
-                    y: 0.0,
-                    direction: 0.0,
-                });
-            }
-            target_items.push(target_sequence);
-        }
-
-        let combined_for_batcher = items
-            .iter()
-            .cloned()
-            .zip(target_items.iter().cloned())
-            .collect::<Vec<_>>();
-
-        let batch = self.batcher.batch(combined_for_batcher.clone());
-
-        let targets = batch.targets;
-
-        let normalizer = Normalizer::new(&targets.device());
-
-        let normalized_inputs = normalizer.normalize(batch.inputs.clone());
-        let (predicted, kl_loss) = self.model.forward(normalized_inputs);
-        let predicted = normalizer.denormalize(predicted);
-
-        // Display the predicted vs expected values
-        let predicted_data = predicted.clone().into_data();
-        // let expected_data = targets.clone().into_data();
-
-        // normalize values to see differential in numbers
-        // let normalized_predicted = normalizer.normalize(predicted);
-        // let normalized_expected = normalizer.normalize(targets);
-        // let normalized_predicted_data = normalized_predicted.into_data();
-        // let normalized_expected_data = normalized_expected.into_data();
-
-        // let points = predicted_data
-        //     .iter::<f32>()
-        //     .zip(expected_data.iter::<f32>())
-        //     .collect::<Vec<_>>();
-
-        // let normalized_points = normalized_predicted_data
-        //     .iter::<f32>()
-        //     .zip(normalized_expected_data.iter::<f32>())
-        //     .collect::<Vec<_>>();
-
-        println!("Predicted Motion Paths:");
-
-        // println!("Denormalized...");
-        // // Print all values
-        // for (predicted, expected) in points {
-        //     println!("Predicted {} Expected {}", predicted, expected);
-        // }
-
-        let predicted_output: Vec<f32> = predicted_data.iter::<f32>().collect();
-
-        // print predicted values in lines of 6 columns
-        for (i, predicted) in predicted_data.iter::<f32>().enumerate() {
-            if i % NUM_FEATURES == 0 {
-                println!();
-            }
-            print!("{}, ", predicted);
-        }
-
-        // println!("Normalized...");
-        // // Print all values
-        // for (predicted, expected) in normalized_points {
-        //     println!("Predicted {} Expected {}", predicted, expected);
-        // }
-
-        predicted_output
+        println!("Image saved to {}", path);
+        Ok(())
     }
+}
+
+/// Helper function to interpolate between two prompts for animation
+pub fn interpolate_prompts(prompt1: &str, prompt2: &str, steps: usize) -> Vec<String> {
+    // Simple implementation: just return the two prompts
+    // In a real implementation, you'd interpolate in latent space
+    let mut prompts = Vec::new();
+    for i in 0..steps {
+        if i < steps / 2 {
+            prompts.push(prompt1.to_string());
+        } else {
+            prompts.push(prompt2.to_string());
+        }
+    }
+    prompts
 }

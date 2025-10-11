@@ -1,4 +1,4 @@
-use crate::dataset::{DiffusionBatch, IMAGE_CHANNELS, IMAGE_SIZE, MAX_SEQ_LEN};
+use crate::dataset::{DiffusionBatch, IMAGE_CHANNELS};
 use burn::{
     config::Config,
     module::Module,
@@ -12,7 +12,9 @@ use burn::{
         backend::{AutodiffBackend, Backend},
         Tensor,
     },
-    train::{ClassificationOutput, TrainOutput, TrainStep, ValidStep},
+    train::{
+        RegressionOutput, TrainOutput, TrainStep, ValidStep,
+    },
 };
 
 // ============================================================================
@@ -710,7 +712,7 @@ impl<B: Backend> UNet<B> {
         self.conv_out.forward(h)
     }
 
-    pub fn forward_step(&self, batch: DiffusionBatch<B>) -> ClassificationOutput<B> {
+    pub fn forward_step(&self, batch: DiffusionBatch<B>) -> RegressionOutput<B> {
         // Predict noise
         let predicted_noise = self.forward(
             batch.noisy_images.clone(),
@@ -725,22 +727,24 @@ impl<B: Backend> UNet<B> {
             burn::nn::loss::Reduction::Mean,
         );
 
-        ClassificationOutput {
-            loss,
-            output: predicted_noise,
-        }
+        // Flatten for RegressionOutput (expects 2D tensors)
+        let [batch_size, channels, height, width] = predicted_noise.dims();
+        let output_flat = predicted_noise.clone().reshape([batch_size, channels * height * width]);
+        let targets_flat = batch.noise.reshape([batch_size, channels * height * width]);
+
+        RegressionOutput::new(loss, output_flat, targets_flat)
     }
 }
 
-impl<B: AutodiffBackend> TrainStep<DiffusionBatch<B>, ClassificationOutput<B>> for UNet<B> {
-    fn step(&self, batch: DiffusionBatch<B>) -> TrainOutput<ClassificationOutput<B>> {
+impl<B: AutodiffBackend> TrainStep<DiffusionBatch<B>, RegressionOutput<B>> for UNet<B> {
+    fn step(&self, batch: DiffusionBatch<B>) -> TrainOutput<RegressionOutput<B>> {
         let output = self.forward_step(batch);
         TrainOutput::new(self, output.loss.backward(), output)
     }
 }
 
-impl<B: Backend> ValidStep<DiffusionBatch<B>, ClassificationOutput<B>> for UNet<B> {
-    fn step(&self, batch: DiffusionBatch<B>) -> ClassificationOutput<B> {
+impl<B: Backend> ValidStep<DiffusionBatch<B>, RegressionOutput<B>> for UNet<B> {
+    fn step(&self, batch: DiffusionBatch<B>) -> RegressionOutput<B> {
         self.forward_step(batch)
     }
 }

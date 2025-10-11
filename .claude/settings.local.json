@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Read(//d/projects/common/image-gen/diffusiondb/unzipped-json/**)"
+      "Read(//d/projects/common/image-gen/diffusiondb/unzipped-json/**)",
+      "Bash(cargo check:*)"
     ],
     "deny": [],
     "ask": []

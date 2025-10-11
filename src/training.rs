@@ -1,6 +1,5 @@
 use crate::dataset::{DiffusionBatcher, DiffusionDataset};
 use crate::model::UNetConfig;
-use burn::lr_scheduler::cosine::CosineAnnealingLrSchedulerConfig;
 use burn::lr_scheduler::linear::LinearLrSchedulerConfig;
 use burn::optim::AdamWConfig;
 use burn::train::metric::{CudaMetric, LearningRateMetric};
@@ -41,13 +40,8 @@ pub struct TrainingConfig {
     pub model: UNetConfig,
 
     // Dataset paths
-    #[config(default = "\"../diffusiondb/unzipped-json/\"")]
     pub json_dir: String,
-
-    #[config(default = "\"../diffusiondb/unzipped-64/\"")]
     pub image_dir: String,
-
-    #[config(default = "\"tokenizer.json\"")]
     pub tokenizer_path: String,
 
     // Training split (use first N files for training, rest for validation)
@@ -68,6 +62,9 @@ impl Default for TrainingConfig {
                 .with_beta_2(0.999)
                 .with_epsilon(1e-8),
             UNetConfig::new(),
+            "../diffusiondb/unzipped-json/".to_string(),
+            "../diffusiondb/unzipped-64/".to_string(),
+            "tokenizer.json".to_string(),
         )
     }
 }
@@ -94,7 +91,13 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
         .with_text_embed_dim(256)
         .with_channels(vec![64, 128, 256]);
 
-    let config = TrainingConfig::new(optimizer, model_config);
+    let config = TrainingConfig::new(
+        optimizer,
+        model_config,
+        "../diffusiondb/unzipped-json/".to_string(),
+        "../diffusiondb/unzipped-64/".to_string(),
+        "tokenizer.json".to_string(),
+    );
     B::seed(config.seed);
 
     println!("=== Diffusion Model Training Configuration ===");
@@ -181,7 +184,8 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
         config.learning_rate,
         config.warmup_steps,
     )
-    .init();
+    .init()
+    .expect("Couldn't ccreate learning rate");
 
     // Option 2: Cosine annealing (alternative)
     // let lr_scheduler = CosineAnnealingLrSchedulerConfig::new(
@@ -263,8 +267,14 @@ pub fn create_large_model_config() -> TrainingConfig {
         .with_text_embed_dim(512)
         .with_channels(vec![128, 256, 512, 512]); // Deeper model
 
-    TrainingConfig::new(optimizer, model_config)
-        .with_batch_size(4) // Smaller batch for larger model
+    TrainingConfig::new(
+        optimizer,
+        model_config,
+        "../diffusiondb/unzipped-json/".to_string(),
+        "../diffusiondb/unzipped-64/".to_string(),
+        "tokenizer.json".to_string(),
+    )
+    .with_batch_size(4) // Smaller batch for larger model
         .with_learning_rate(5e-5) // Lower LR for larger model
         .with_warmup_steps(2000)
         .with_num_epochs(300)
