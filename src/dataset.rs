@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tokenizers::Tokenizer;
 
 // Constants
 pub const IMAGE_SIZE: usize = 64;
@@ -45,68 +46,50 @@ struct ImageMetadataJson {
 }
 
 // ============================================================================
-// Text Tokenizer
+// Text Tokenizer (using tokenizers crate)
 // ============================================================================
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TextTokenizer {
-    vocab: HashMap<String, usize>,
-    vocab_size: usize,
-    pad_token_id: usize,
-    unk_token_id: usize,
+    tokenizer: Tokenizer,
+    pad_token_id: u32,
 }
 
 impl TextTokenizer {
-    pub fn new() -> Self {
-        let mut vocab = HashMap::new();
-        vocab.insert("<PAD>".to_string(), 0);
-        vocab.insert("<UNK>".to_string(), 1);
+    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let tokenizer = Tokenizer::from_file(path)?;
+        let pad_token_id = tokenizer
+            .token_to_id("[PAD]")
+            .ok_or("PAD token not found in tokenizer")?;
 
-        Self {
-            vocab,
-            vocab_size: 2,
-            pad_token_id: 0,
-            unk_token_id: 1,
-        }
+        Ok(Self {
+            tokenizer,
+            pad_token_id,
+        })
     }
 
-    pub fn build_vocab(&mut self, texts: &[String]) {
-        for text in texts {
-            for word in text.split_whitespace() {
-                let word_lower = word.to_lowercase();
-                if !self.vocab.contains_key(&word_lower) {
-                    self.vocab.insert(word_lower, self.vocab_size);
-                    self.vocab_size += 1;
-                }
-            }
-        }
-    }
+    pub fn encode(&self, text: &str, max_len: usize) -> Result<(Vec<u32>, Vec<bool>), Box<dyn std::error::Error>> {
+        let encoding = self.tokenizer.encode(text, false)?;
+        let mut ids = encoding.get_ids().to_vec();
+        let mut mask = vec![true; ids.len()];
 
-    pub fn encode(&self, text: &str, max_len: usize) -> (Vec<usize>, Vec<bool>) {
-        let mut tokens = Vec::new();
-        let mut mask = Vec::new();
-
-        for word in text.split_whitespace() {
-            if tokens.len() >= max_len {
-                break;
-            }
-            let word_lower = word.to_lowercase();
-            let token_id = *self.vocab.get(&word_lower).unwrap_or(&self.unk_token_id);
-            tokens.push(token_id);
-            mask.push(true);
+        // Truncate if too long
+        if ids.len() > max_len {
+            ids.truncate(max_len);
+            mask.truncate(max_len);
         }
 
-        // Pad to max_len
-        while tokens.len() < max_len {
-            tokens.push(self.pad_token_id);
+        // Pad if too short
+        while ids.len() < max_len {
+            ids.push(self.pad_token_id);
             mask.push(false);
         }
 
-        (tokens, mask)
+        Ok((ids, mask))
     }
 
     pub fn vocab_size(&self) -> usize {
-        self.vocab_size
+        self.tokenizer.get_vocab_size(true)
     }
 }
 
@@ -173,12 +156,18 @@ pub struct DiffusionDataset {
 }
 
 impl DiffusionDataset {
-    pub fn new(json_dir: &str, image_dir: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        json_dir: &str,
+        image_dir: &str,
+        tokenizer_path: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut items = Vec::new();
         let json_path = Path::new(json_dir);
 
-        // Collect all prompts first for vocab building
-        let mut all_prompts = Vec::new();
+        // Load tokenizer from file
+        println!("Loading tokenizer from {}...", tokenizer_path);
+        let tokenizer = TextTokenizer::from_file(tokenizer_path)?;
+        println!("Tokenizer loaded. Vocabulary size: {}", tokenizer.vocab_size());
 
         // Read all JSON files
         let json_files: Vec<_> = fs::read_dir(json_path)?
@@ -203,8 +192,6 @@ impl DiffusionDataset {
 
                 // Only add if image exists
                 if image_path.exists() {
-                    all_prompts.push(metadata_json.p.clone());
-
                     items.push(DiffusionItem {
                         image_path,
                         metadata: DiffusionMetadata {
@@ -220,12 +207,6 @@ impl DiffusionDataset {
         }
 
         println!("Loaded {} items", items.len());
-
-        // Build tokenizer vocabulary
-        let mut tokenizer = TextTokenizer::new();
-        println!("Building vocabulary...");
-        tokenizer.build_vocab(&all_prompts);
-        println!("Vocabulary size: {}", tokenizer.vocab_size());
 
         Ok(Self { items, tokenizer })
     }
@@ -339,7 +320,13 @@ impl<B: Backend> Batcher<DiffusionItem, DiffusionBatch<B>> for DiffusionBatcher<
             all_images.extend(image_data);
 
             // Tokenize text
-            let (tokens, mask) = self.tokenizer.encode(&item.metadata.prompt, MAX_SEQ_LEN);
+            let (tokens, mask) = self
+                .tokenizer
+                .encode(&item.metadata.prompt, MAX_SEQ_LEN)
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to tokenize prompt: {}", e);
+                    (vec![0; MAX_SEQ_LEN], vec![false; MAX_SEQ_LEN])
+                });
             text_tokens_vec.extend(tokens);
             text_mask_vec.extend(mask.iter().map(|&b| if b { 1.0 } else { 0.0 }));
 
