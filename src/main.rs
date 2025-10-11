@@ -7,11 +7,11 @@ use mini_pic::{
 
 static ARTIFACT_DIR: &str = "/tmp/mini-pic-v001";
 
-use burn::backend::wgpu::{Wgpu, WgpuDevice};
+use burn::backend::cuda::{Cuda, CudaDevice};
 
-pub fn run_wgpu() {
-    let device = WgpuDevice::DiscreteGpu(0);
-    run::<Wgpu>(device);
+pub fn run_cuda() {
+    let device = CudaDevice::default();
+    run::<Cuda>(device);
 }
 
 /// Train a regression model and predict results on a number of samples.
@@ -24,7 +24,7 @@ pub fn run<B: Backend>(device: B::Device) {
 }
 
 fn main() {
-    run_wgpu();
+    run_cuda();
     // let inference = load_common_motion_2d();
     // println!("Running inference...");
     // inference.infer("0, 5, 354, 154, 239, 91, \n1, 5, 544, 244, 106, 240, ".to_string());

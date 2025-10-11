@@ -562,20 +562,20 @@ pub struct UNet<B: Backend> {
     // Initial convolution
     conv_in: Conv2d<B>,
 
-    // // Encoder
-    // down1: DownBlock<B>,
-    // down2: DownBlock<B>,
-    // down3: DownBlock<B>,
+    // Encoder
+    down1: DownBlock<B>,
+    down2: DownBlock<B>,
+    down3: DownBlock<B>,
 
-    // // Bottleneck
-    // mid_block1: ResNetBlock<B>,
-    // mid_attn: Option<AttentionBlock<B>>,
-    // mid_block2: ResNetBlock<B>,
+    // Bottleneck
+    mid_block1: ResNetBlock<B>,
+    mid_attn: Option<AttentionBlock<B>>,
+    mid_block2: ResNetBlock<B>,
 
-    // // Decoder
-    // up1: UpBlock<B>,
-    // up2: UpBlock<B>,
-    // up3: UpBlock<B>,
+    // Decoder
+    up1: UpBlock<B>,
+    up2: UpBlock<B>,
+    up3: UpBlock<B>,
 
     // Output
     norm_out: GroupNorm<B>,
@@ -622,77 +622,77 @@ impl UNetConfig {
             .init(device);
 
         // // Down blocks (64x64 -> 32x32 -> 16x16 -> 8x8)
-        // let down1 = DownBlock::new(
-        //     self.channels[0],
-        //     self.channels[0],
-        //     time_emb_dim,
-        //     self.text_embed_dim,
-        //     false, // use_attn
-        //     true,
-        //     self.resnet_blocks_per_level,
-        //     device,
-        // );
-        // let down2 = DownBlock::new(
-        //     self.channels[0],
-        //     self.channels[1],
-        //     time_emb_dim,
-        //     self.text_embed_dim,
-        //     false, // use_attn
-        //     true,
-        //     self.resnet_blocks_per_level,
-        //     device,
-        // );
-        // let down3 = DownBlock::new(
-        //     self.channels[1],
-        //     self.channels[2],
-        //     time_emb_dim,
-        //     self.text_embed_dim,
-        //     false, // use_attn
-        //     false,
-        //     self.resnet_blocks_per_level,
-        //     device,
-        // );
+        let down1 = DownBlock::new(
+            self.channels[0],
+            self.channels[0],
+            time_emb_dim,
+            self.text_embed_dim,
+            false, // use_attn
+            true,
+            self.resnet_blocks_per_level,
+            device,
+        );
+        let down2 = DownBlock::new(
+            self.channels[0],
+            self.channels[1],
+            time_emb_dim,
+            self.text_embed_dim,
+            false, // use_attn
+            true,
+            self.resnet_blocks_per_level,
+            device,
+        );
+        let down3 = DownBlock::new(
+            self.channels[1],
+            self.channels[2],
+            time_emb_dim,
+            self.text_embed_dim,
+            false, // use_attn
+            false,
+            self.resnet_blocks_per_level,
+            device,
+        );
 
-        // // Bottleneck at 16x16
-        // let mid_block1 = ResNetBlock::new(self.channels[2], self.channels[2], time_emb_dim, device);
-        // let mid_attn = if self.use_mid_attn {
-        //     Some(AttentionBlock::new(self.channels[2], self.text_embed_dim, 4, device))
-        // } else {
-        //     None
-        // };
-        // let mid_block2 = ResNetBlock::new(self.channels[2], self.channels[2], time_emb_dim, device);
+        // Bottleneck at 16x16
+        let mid_block1 = ResNetBlock::new(self.channels[2], self.channels[2], time_emb_dim, device);
+        let mid_attn = if self.use_mid_attn {
+            Some(AttentionBlock::new(self.channels[2], self.text_embed_dim, 4, device))
+        } else {
+            None
+        };
+        let mid_block2 = ResNetBlock::new(self.channels[2], self.channels[2], time_emb_dim, device);
 
-        // // Up blocks
-        // let up1 = UpBlock::new(
-        //     self.channels[2],
-        //     self.channels[1],
-        //     time_emb_dim,
-        //     self.text_embed_dim,
-        //     false, // use_attn
-        //     true,
-        //     self.resnet_blocks_per_level,
-        //     device,
-        // );
-        // let up2 = UpBlock::new(
-        //     self.channels[1],
-        //     self.channels[0],
-        //     time_emb_dim,
-        //     self.text_embed_dim,
-        //     false, // use_attn
-        //     true,
-        //     self.resnet_blocks_per_level,
-        //     device,
-        // );
-        // let up3 = UpBlock::new(
-        //     self.channels[0],
-        //     self.channels[0],
-        //     time_emb_dim,
-        //     self.text_embed_dim,
-        //     false, // use_attn
-        //     false,
-        //     self.resnet_blocks_per_level,
-        //     device,
-        // );
+        // Up blocks
+        let up1 = UpBlock::new(
+            self.channels[2],
+            self.channels[1],
+            time_emb_dim,
+            self.text_embed_dim,
+            false, // use_attn
+            true,
+            self.resnet_blocks_per_level,
+            device,
+        );
+        let up2 = UpBlock::new(
+            self.channels[1],
+            self.channels[0],
+            time_emb_dim,
+            self.text_embed_dim,
+            false, // use_attn
+            true,
+            self.resnet_blocks_per_level,
+            device,
+        );
+        let up3 = UpBlock::new(
+            self.channels[0],
+            self.channels[0],
+            time_emb_dim,
+            self.text_embed_dim,
+            false, // use_attn
+            false,
+            self.resnet_blocks_per_level,
+            device,
+        );
 
         // Output
         let norm_out = GroupNormConfig::new(8, self.channels[0]).init(device);
@@ -705,15 +705,15 @@ impl UNetConfig {
             text_encoder,
             time_embedding,
             conv_in,
-            // down1,
-            // down2,
-            // down3,
-            // mid_block1,
-            // mid_attn,
-            // mid_block2,
-            // up1,
-            // up2,
-            // up3,
+            down1,
+            down2,
+            down3,
+            mid_block1,
+            mid_attn,
+            mid_block2,
+            up1,
+            up2,
+            up3,
             norm_out,
             conv_out,
             activation: Gelu::new(),
@@ -738,22 +738,22 @@ impl<B: Backend> UNet<B> {
         // Initial conv
         let mut h = self.conv_in.forward(noisy_images);
 
-        // // Encoder
-        // let (h1, skip1) = self.down1.forward(h, time_emb.clone(), text_context.clone());
-        // let (h2, skip2) = self.down2.forward(h1, time_emb.clone(), text_context.clone());
-        // let (h3, skip3) = self.down3.forward(h2, time_emb.clone(), text_context.clone());
+        // Encoder
+        let (h1, skip1) = self.down1.forward(h, time_emb.clone(), text_context.clone());
+        let (h2, skip2) = self.down2.forward(h1, time_emb.clone(), text_context.clone());
+        let (h3, skip3) = self.down3.forward(h2, time_emb.clone(), text_context.clone());
 
-        // // Bottleneck
-        // let mut h = self.mid_block1.forward(h3, time_emb.clone());
-        // if let Some(ref attn) = self.mid_attn {
-        //     h = attn.forward(h, text_context.clone());
-        // }
-        // h = self.mid_block2.forward(h, time_emb.clone());
+        // Bottleneck
+        let mut h = self.mid_block1.forward(h3, time_emb.clone());
+        if let Some(ref attn) = self.mid_attn {
+            h = attn.forward(h, text_context.clone());
+        }
+        h = self.mid_block2.forward(h, time_emb.clone());
 
-        // // Decoder
-        // h = self.up1.forward(h, skip3, time_emb.clone(), text_context.clone());
-        // h = self.up2.forward(h, skip2, time_emb.clone(), text_context.clone());
-        // h = self.up3.forward(h, skip1, time_emb, text_context);
+        // Decoder
+        h = self.up1.forward(h, skip3, time_emb.clone(), text_context.clone());
+        h = self.up2.forward(h, skip2, time_emb.clone(), text_context.clone());
+        h = self.up3.forward(h, skip1, time_emb, text_context);
 
         // Output
         h = self.norm_out.forward(h);
@@ -763,16 +763,16 @@ impl<B: Backend> UNet<B> {
 
     pub fn forward_step(&self, batch: DiffusionBatch<B>) -> RegressionOutput<B> {
         // Predict noise
-        // let predicted_noise = self.forward(
-        //     batch.noisy_images.clone(),
-        //     batch.timesteps.clone(),
-        //     batch.text_tokens.clone(),
-        // );
+        let predicted_noise = self.forward(
+            batch.noisy_images.clone(),
+            batch.timesteps.clone(),
+            batch.text_tokens.clone(),
+        );
 
         // Create dummy tensor with correct batch size and shape to bypass model
-        let [batch_size, channels, height, width] = batch.noisy_images.dims();
-        let device = &self.devices()[0];
-        let predicted_noise: Tensor<B, 4> = Tensor::zeros([batch_size, channels, height, width], device);
+        // let [batch_size, channels, height, width] = batch.noisy_images.dims();
+        // let device = batch.noisy_images.device();
+        // let predicted_noise: Tensor<B, 4> = Tensor::zeros([batch_size, channels, height, width], &device);
 
         // MSE loss between predicted noise and actual noise
         let loss = MseLoss::new().forward(
