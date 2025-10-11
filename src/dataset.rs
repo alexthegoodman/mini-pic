@@ -358,7 +358,7 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
         let mut text_mask_vec = Vec::new();
         let mut timesteps_vec = Vec::new();
 
-        println!("Items length: {:?}", items.len());
+        // println!("Items length: {:?}", items.len());
 
         for item in items {
             // Load image

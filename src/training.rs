@@ -1,17 +1,23 @@
 use crate::dataset::{DiffusionBatcher, DiffusionDataset, DiffusionBatch};
-use crate::model::UNetConfig;
-use burn::lr_scheduler::linear::LinearLrSchedulerConfig;
-use burn::optim::AdamWConfig;
+use crate::model::{UNet, UNetConfig};
+use burn::lr_scheduler::linear::{LinearLrScheduler, LinearLrSchedulerConfig};
+use burn::optim::{AdamW, AdamWConfig, Optimizer};
 use burn::train::metric::{CudaMetric, LearningRateMetric};
 use burn::train::RegressionOutput;
 use burn::{
     data::{dataloader::DataLoaderBuilder, dataset::Dataset},
     prelude::*,
-    record::{CompactRecorder},
+    record::{CompactRecorder, NoStdTrainingRecorder},
     tensor::backend::AutodiffBackend,
     train::{metric::LossMetric, LearnerBuilder},
+    nn::{
+        conv::{Conv2d, Conv2dConfig},
+        loss::MseLoss,
+        Embedding, EmbeddingConfig, Gelu, GroupNorm, GroupNormConfig, Linear, LinearConfig,
+    },
 };
 use burn::data::dataloader::batcher::Batcher;
+use burn::module::AutodiffModule;
 
 #[derive(Config)]
 pub struct TrainingConfig {
@@ -247,7 +253,7 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
 
     // Build learner with explicit type annotations
     // The RegressionOutput needs to sync to the same backend for metrics to work
-    let learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, _, _, _>::new(artifact_dir)
+    let learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, LinearLrScheduler>::new(artifact_dir)
         .metric_train(CudaMetric::new())
         .metric_valid(CudaMetric::new())
         .metric_train_numeric(LossMetric::new())
@@ -266,27 +272,27 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
     // TODO: never reaches here. just appears to fail silently and exits
     println!("Starting training...\n");
     
-    // println!("\nNow trying fit()...");
-    // // Train the model
-    // let model_trained = learner.fit(dataloader_train, dataloader_valid);
+    println!("\nNow trying fit()...");
+    // Train the model
+    let model_trained = learner.fit(dataloader_train, dataloader_valid);
 
-    // println!("\nTraining complete!");
-    // println!("Saving model and config to {}", artifact_dir);
+    println!("\nTraining complete!");
+    println!("Saving model and config to {}", artifact_dir);
 
-    // // Save config
-    // config
-    //     .save(format!("{artifact_dir}/config.json").as_str())
-    //     .expect("Failed to save config");
+    // Save config
+    config
+        .save(format!("{artifact_dir}/config.json").as_str())
+        .expect("Failed to save config");
 
-    // // Save trained model
-    // model_trained
-    //     .save_file(
-    //         format!("{artifact_dir}/model"),
-    //         &NoStdTrainingRecorder::new(),
-    //     )
-    //     .expect("Failed to save trained model");
+    // Save trained model
+    model_trained
+        .save_file(
+            format!("{artifact_dir}/model"),
+            &NoStdTrainingRecorder::new(),
+        )
+        .expect("Failed to save trained model");
 
-    // println!("Model saved successfully!");
+    println!("Model saved successfully!");
 }
 
 // ============================================================================
