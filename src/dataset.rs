@@ -239,7 +239,7 @@ pub struct DiffusionBatch<B: Backend> {
     pub noisy_images: Tensor<B, 4>,     // [batch_size, 3, 64, 64] - noised images
     pub noise: Tensor<B, 4>,            // [batch_size, 3, 64, 64] - the noise added
     pub timesteps: Tensor<B, 1>,        // [batch_size] - timesteps
-    pub text_tokens: Tensor<B, 2>,      // [batch_size, max_seq_len]
+    pub text_tokens: Tensor<B, 2, Int>, // [batch_size, max_seq_len]
     pub text_mask: Tensor<B, 2>,        // [batch_size, max_seq_len]
 }
 
@@ -362,10 +362,10 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
         let noise = Tensor::<B, 4>::random_like(&images, burn::tensor::Distribution::Normal(0.0, 1.0));
 
         // Apply noise schedule to each item in batch
-        let mut noisy_images_data = Vec::new();
-        let images_data = images.clone().into_data().convert::<f32>().to_vec().unwrap();
-        let noise_data = noise.clone().into_data().convert::<f32>().to_vec().unwrap();
-        let timesteps_data = timesteps.clone().into_data().convert::<i32>().to_vec().unwrap();
+        let mut noisy_images_data: Vec<f32> = Vec::new();
+        let images_data: Vec<f32> = images.clone().into_data().convert::<f32>().to_vec().unwrap();
+        let noise_data: Vec<f32> = noise.clone().into_data().convert::<f32>().to_vec().unwrap();
+        let timesteps_data: Vec<i32> = timesteps.clone().into_data().convert::<i32>().to_vec().unwrap();
 
         let img_size = IMAGE_CHANNELS * IMAGE_SIZE * IMAGE_SIZE;
         for i in 0..batch_size {

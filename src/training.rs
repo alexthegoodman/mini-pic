@@ -61,7 +61,7 @@ impl Default for TrainingConfig {
                 .with_beta_1(0.9)
                 .with_beta_2(0.999)
                 .with_epsilon(1e-8),
-            UNetConfig::new(),
+            UNetConfig::new(vec![64, 128, 256]),
             "../diffusiondb/unzipped-json/".to_string(),
             "../diffusiondb/unzipped-64/".to_string(),
             "tokenizer.json".to_string(),
@@ -86,10 +86,9 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
         .with_epsilon(1e-8);
 
     // Model config - lightweight U-Net
-    let model_config = UNetConfig::new()
+    let model_config = UNetConfig::new(vec![64, 128, 256])
         .with_vocab_size(8192) // Will be updated after loading tokenizer
-        .with_text_embed_dim(256)
-        .with_channels(vec![64, 128, 256]);
+        .with_text_embed_dim(256);
 
     let config = TrainingConfig::new(
         optimizer,
@@ -262,10 +261,9 @@ pub fn create_large_model_config() -> TrainingConfig {
         .with_beta_1(0.9)
         .with_beta_2(0.999);
 
-    let model_config = UNetConfig::new()
+    let model_config = UNetConfig::new(vec![128, 256, 512, 512]) // Deeper model
         .with_vocab_size(8192)
-        .with_text_embed_dim(512)
-        .with_channels(vec![128, 256, 512, 512]); // Deeper model
+        .with_text_embed_dim(512);
 
     TrainingConfig::new(
         optimizer,

@@ -10,7 +10,7 @@ use burn::{
     tensor::{
         activation::softmax,
         backend::{AutodiffBackend, Backend},
-        Tensor,
+        Int, Tensor,
     },
     train::{
         RegressionOutput, TrainOutput, TrainStep, ValidStep,
@@ -564,8 +564,13 @@ pub struct UNetConfig {
     pub vocab_size: usize,
     #[config(default = 256)]
     pub text_embed_dim: usize,
-    #[config(default = "[64, 128, 256]")]
     pub channels: Vec<usize>,
+}
+
+impl Default for UNetConfig {
+    fn default() -> Self {
+        Self::new(vec![64, 128, 256])
+    }
 }
 
 impl UNetConfig {
@@ -679,7 +684,7 @@ impl<B: Backend> UNet<B> {
         &self,
         noisy_images: Tensor<B, 4>,
         timesteps: Tensor<B, 1>,
-        text_tokens: Tensor<B, 2>,
+        text_tokens: Tensor<B, 2, Int>,
     ) -> Tensor<B, 4> {
         // Encode text
         let text_emb = self.text_embedding.forward(text_tokens);

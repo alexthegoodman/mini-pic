@@ -30,10 +30,9 @@ impl<B: Backend> DiffusionInference<B> {
         let vocab_size = tokenizer.vocab_size();
 
         // Initialize model config with correct vocab size
-        let model_config = UNetConfig::new()
+        let model_config = UNetConfig::new(vec![64, 128, 256])
             .with_vocab_size(vocab_size)
-            .with_text_embed_dim(256)
-            .with_channels(vec![64, 128, 256]);
+            .with_text_embed_dim(256);
 
         // Load trained model
         println!("Loading model from {}...", model_path);
@@ -217,7 +216,7 @@ impl<B: Backend> DiffusionInference<B> {
         }
 
         // Convert to [0, 255] range
-        let image_data = ((image_tensor.clone() + 1.0) * 127.5)
+        let image_data: Vec<f32> = ((image_tensor.clone() + 1.0) * 127.5)
             .clamp(0.0, 255.0)
             .into_data()
             .convert::<f32>()
