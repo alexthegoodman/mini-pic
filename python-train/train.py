@@ -434,11 +434,18 @@ def main():
         ddim_steps=50,
 
         # Quality hyperparameters
-        # channels=[32, 64, 128],
-        channels=[64, 128, 256],
-        # channels=[128, 256, 512],
-        text_embed_dim=32,
+        # channels=[32, 64, 128], # too small, seems to hurt
+        channels=[64, 128, 256], # sweet spot
+        # channels=[128, 256, 512], # does not seem to help
+        # text_embed_dim=32,
         use_mid_attn=True,
+        text_embed_dim=32,
+        time_embed_dim=32,
+        resnet_blocks_per_level=1,
+        # does not help with generative quality, currently
+        # text_embed_dim=64, 
+        # time_embed_dim=64,
+        # resnet_blocks_per_level=2,
     )
 
     trainer = Trainer(config)
