@@ -33,6 +33,10 @@ or to resume
 
 `uv run python resume_train.py`
 
+consider trying
+
+`uv run python train_diffusion_gan.py`
+
 The training script will:
 
 - Train for 50 epochs on 1000 samples (quick test)

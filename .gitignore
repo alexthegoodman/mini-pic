@@ -1,6 +1,7 @@
 /target
 nul
 **/checkpoints
+**/checkpoints_gan
 **/__pycache__
 **/.venv
 *.png
