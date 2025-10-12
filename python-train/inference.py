@@ -124,11 +124,13 @@ class DDPMSampler:
         # Create timestep schedule (uniformly spaced)
         timestep_schedule = np.linspace(self.num_timesteps - 1, 0, num_steps, dtype=int)
 
+        # Wrap in tqdm if needed (but keep original for indexing)
+        schedule_iter = timestep_schedule
         if show_progress:
             from tqdm import tqdm
-            timestep_schedule = tqdm(timestep_schedule, desc="DDIM Sampling")
+            schedule_iter = tqdm(timestep_schedule, desc="DDIM Sampling")
 
-        for i, t in enumerate(timestep_schedule):
+        for i, t in enumerate(schedule_iter):
             # Current timestep
             t_batch = torch.full((total_samples,), t, device=self.device, dtype=torch.long)
 
@@ -139,7 +141,7 @@ class DDPMSampler:
             alpha_bar_t = self.noise_schedule.alpha_bars[t]
 
             # Get next alpha (for next timestep)
-            if i < len(timestep_schedule) - 1:
+            if i < num_steps - 1:
                 t_next = timestep_schedule[i + 1]
                 alpha_bar_next = self.noise_schedule.alpha_bars[t_next]
             else:
