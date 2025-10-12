@@ -421,7 +421,8 @@ def main():
         # For quick testing - remove max_samples for full training
         max_samples=80000,  # Use 1000 samples for testing
         num_epochs=50,
-        batch_size=16,
+        batch_size=16, # good sweet spot for quality and speed
+        # batch_size=64, # supposed to be faster training, but really each batch becomes slower
         learning_rate=1e-4,
         warmup_steps=500,
 

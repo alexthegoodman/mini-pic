@@ -29,6 +29,10 @@ uv run python test_model.py
 uv run python train.py
 ```
 
+or to resume
+
+`uv run python resume_train.py`
+
 The training script will:
 
 - Train for 50 epochs on 1000 samples (quick test)
