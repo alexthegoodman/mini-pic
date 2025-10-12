@@ -33,7 +33,7 @@ or to resume
 
 `uv run python resume_train.py`
 
-consider trying
+consider trying (it produces very similar results currently)
 
 `uv run python train_diffusion_gan.py`
 
