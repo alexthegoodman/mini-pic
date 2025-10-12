@@ -419,7 +419,7 @@ def main():
     """Main training function"""
     config = TrainingConfig(
         # For quick testing - remove max_samples for full training
-        max_samples=8000,  # Use 1000 samples for testing
+        max_samples=80000,  # Use 1000 samples for testing
         num_epochs=50,
         batch_size=16,
         learning_rate=1e-4,
@@ -434,9 +434,9 @@ def main():
 
         # Quality hyperparameters
         # channels=[32, 64, 128],
-        # channels=[64, 128, 256],
-        channels=[128, 256, 512],
-        text_embed_dim=64,
+        channels=[64, 128, 256],
+        # channels=[128, 256, 512],
+        text_embed_dim=32,
         use_mid_attn=True,
     )
 

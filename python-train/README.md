@@ -30,6 +30,7 @@ uv run python train.py
 ```
 
 The training script will:
+
 - Train for 50 epochs on 1000 samples (quick test)
 - Save checkpoints every 5 epochs
 - **Generate sample images every 5 epochs** → saved to `checkpoints/samples/`
@@ -38,11 +39,7 @@ The training script will:
 ### 3. Generate Images from Trained Model
 
 ```bash
-uv run python generate.py \
-  --checkpoint checkpoints/best_model.pt \
-  --prompts "a sunset over mountains" "cyberpunk city" \
-  --num_samples 4 \
-  --output my_generation.png
+uv run python generate.py --checkpoint checkpoints/best_model.pt --prompts "a sunset over mountains" "cyberpunk city" --num_samples 4 --output my_generation.png
 ```
 
 ## Sample Generation During Training
@@ -50,11 +47,13 @@ uv run python generate.py \
 The training script automatically generates sample images to track progress!
 
 Every 5 epochs (configurable), it will:
+
 1. Pick prompts from the dataset (or use custom prompts)
 2. Generate 4 images per prompt using DDIM sampling (50 steps)
 3. Save a grid image to `checkpoints/samples/epoch_XXX.png`
 
 Example output:
+
 ```
 Generating samples with prompts:
   1. doom eternal, game concept art, veins and worms, muscular, crustacean exoske...
@@ -70,6 +69,7 @@ Watch the `checkpoints/samples/` folder to see your model improve over time!
 ## Model Architecture
 
 **U-Net** with text conditioning (~635K parameters):
+
 - **Encoder**: 3 downsampling blocks (64×64 → 32×32 → 16×16)
 - **Bottleneck**: ResNet blocks + optional attention
 - **Decoder**: 3 upsampling blocks with skip connections
@@ -130,11 +130,13 @@ checkpoints/
 ## Inference Options
 
 ### DDIM Sampling (Recommended)
+
 - **Fast**: 50 steps (vs 1000 for DDPM)
 - **Quality**: Nearly identical to DDPM
 - **Usage**: `use_ddim=True, ddim_steps=50`
 
 ### DDPM Sampling
+
 - **Slow**: 1000 steps
 - **Quality**: Slightly better (marginal)
 - **Usage**: `use_ddim=False`
