@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Read(//d/projects/common/image-gen/diffusiondb/unzipped-json/**)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(uv add:*)",
+      "Bash(uv run:*)"
     ],
     "deny": [],
     "ask": []

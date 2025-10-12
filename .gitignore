@@ -1,2 +1,5 @@
 /target
 nul
+**/checkpoints
+**/__pycache__
+**/.venv
