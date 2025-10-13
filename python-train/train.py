@@ -214,6 +214,28 @@ class Trainer:
             betas=config.betas,
         )
 
+        # # Create learning rate scheduler with warmup
+        # warmup_scheduler = LinearLR(
+        #     self.optimizer,
+        #     start_factor=1e-6 / config.learning_rate,
+        #     end_factor=1.0,
+        #     total_iters=config.warmup_steps,
+        # )
+
+        # # Constant LR after warmup (could add cosine decay here)
+        # from torch.optim.lr_scheduler import ConstantLR
+        # constant_scheduler = ConstantLR(
+        #     self.optimizer,
+        #     factor=1.0,
+        #     total_iters=len(self.train_loader) * config.num_epochs - config.warmup_steps,
+        # )
+
+        # self.scheduler = SequentialLR(
+        #     self.optimizer,
+        #     schedulers=[warmup_scheduler, constant_scheduler],
+        #     milestones=[config.warmup_steps],
+        # )
+
         # Create learning rate scheduler with warmup
         warmup_scheduler = LinearLR(
             self.optimizer,
@@ -222,17 +244,17 @@ class Trainer:
             total_iters=config.warmup_steps,
         )
 
-        # Constant LR after warmup (could add cosine decay here)
-        from torch.optim.lr_scheduler import ConstantLR
-        constant_scheduler = ConstantLR(
+        # Linear decay after warmup
+        decay_scheduler = LinearLR(
             self.optimizer,
-            factor=1.0,
+            start_factor=1.0,
+            end_factor=1e-6 / config.learning_rate,  # decay to nearly zero
             total_iters=len(self.train_loader) * config.num_epochs - config.warmup_steps,
         )
 
         self.scheduler = SequentialLR(
             self.optimizer,
-            schedulers=[warmup_scheduler, constant_scheduler],
+            schedulers=[warmup_scheduler, decay_scheduler],
             milestones=[config.warmup_steps],
         )
 
@@ -423,8 +445,8 @@ def main():
         num_epochs=50,
         batch_size=16, # good sweet spot for quality and speed
         # batch_size=64, # supposed to be faster training, but really each batch becomes slower
-        learning_rate=1e-4,
-        warmup_steps=500,
+        learning_rate=1e-3,
+        warmup_steps=500, # warms up to lr after 500 batches, then decays back down over the whole training regimen
 
         # Sample generation
         generate_samples=True,
@@ -434,8 +456,8 @@ def main():
         ddim_steps=50,
 
         # Quality hyperparameters
-        # channels=[32, 64, 128], # too small, seems to hurt
-        channels=[64, 128, 256], # sweet spot
+        channels=[32, 64, 128], # actually great
+        # channels=[64, 128, 256], # maybe slightly better?
         # channels=[128, 256, 512], # does not seem to help
         # text_embed_dim=32,
         use_mid_attn=True,
