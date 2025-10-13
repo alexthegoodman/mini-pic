@@ -379,18 +379,66 @@ class UpBlock(nn.Module):
 # U-Net Model
 # ============================================================================
 
+class TextEncoder(nn.Module):
+    """Transformer-based text encoder for better semantic understanding"""
+
+    def __init__(self, vocab_size: int, text_embed_dim: int, num_layers: int = 4, num_heads: int = 4):
+        super().__init__()
+
+        self.embedding = nn.Embedding(vocab_size, text_embed_dim)
+
+        # Positional encoding
+        self.pos_encoding = nn.Parameter(torch.randn(1, 77, text_embed_dim) * 0.02)  # MAX_SEQ_LEN = 77
+
+        # Transformer encoder layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=text_embed_dim,
+            nhead=num_heads,
+            dim_feedforward=text_embed_dim * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # Final projection
+        self.proj = nn.Linear(text_embed_dim, text_embed_dim)
+
+    def forward(self, text_tokens: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            text_tokens: [batch, seq_len]
+        Returns:
+            [batch, seq_len, text_embed_dim]
+        """
+        # Embed tokens
+        x = self.embedding(text_tokens)  # [batch, seq_len, embed_dim]
+
+        # Add positional encoding
+        x = x + self.pos_encoding[:, :x.shape[1], :]
+
+        # Transformer encoding
+        x = self.transformer(x)
+
+        # Final projection
+        x = self.proj(x)
+
+        return x
+
+
 class UNet(nn.Module):
     """U-Net for text-conditioned diffusion model"""
 
     def __init__(
         self,
         vocab_size: int = 8192,
-        text_embed_dim: int = 32,
+        text_embed_dim: int = 128,  # Increased default
         time_embed_dim: int = 32,
         use_mid_attn: bool = False,
         resnet_blocks_per_level: int = 1,
         channels: Optional[List[int]] = None,
         loss_fn: str = "mse",
+        text_encoder_layers: int = 4,
     ):
         super().__init__()
 
@@ -401,9 +449,8 @@ class UNet(nn.Module):
         self.loss_fn = loss_fn
         time_emb_dim_expanded = time_embed_dim * 4
 
-        # Text encoder
-        self.text_embedding = nn.Embedding(vocab_size, text_embed_dim)
-        self.text_encoder = nn.Linear(text_embed_dim, text_embed_dim)
+        # Text encoder - now much stronger
+        self.text_encoder = TextEncoder(vocab_size, text_embed_dim, num_layers=text_encoder_layers)
 
         # Time embedding
         self.time_embedding = TimeEmbedding(time_embed_dim)
@@ -411,30 +458,30 @@ class UNet(nn.Module):
         # Initial conv
         self.conv_in = nn.Conv2d(IMAGE_CHANNELS, channels[0], kernel_size=3, padding=1)
 
-        # Encoder (down blocks)
+        # Encoder (down blocks) - Enable attention at lower resolutions for better text conditioning
         self.down1 = DownBlock(channels[0], channels[0], time_emb_dim_expanded, text_embed_dim,
                                use_attn=False, downsample=True, num_resnet_blocks=resnet_blocks_per_level)
         self.down2 = DownBlock(channels[0], channels[1], time_emb_dim_expanded, text_embed_dim,
-                               use_attn=False, downsample=True, num_resnet_blocks=resnet_blocks_per_level)
+                               use_attn=True, downsample=True, num_resnet_blocks=resnet_blocks_per_level)  # Enable attn
         self.down3 = DownBlock(channels[1], channels[2], time_emb_dim_expanded, text_embed_dim,
-                               use_attn=False, downsample=False, num_resnet_blocks=resnet_blocks_per_level)
+                               use_attn=True, downsample=False, num_resnet_blocks=resnet_blocks_per_level)  # Enable attn
 
         # Bottleneck
         self.mid_block1 = ResNetBlock(channels[2], channels[2], time_emb_dim_expanded)
         self.mid_attn = AttentionBlock(channels[2], text_embed_dim, 4) if use_mid_attn else None
         self.mid_block2 = ResNetBlock(channels[2], channels[2], time_emb_dim_expanded)
 
-        # Decoder (up blocks)
+        # Decoder (up blocks) - Enable attention to match encoder
         # Note: skip connections come from corresponding down blocks
         # up1 receives: bottleneck(64) + skip3(64), up2 receives: up1(32) + skip2(32), up3 receives: up2(16) + skip1(16)
         self.up1 = UpBlock(channels[2], channels[1], time_emb_dim_expanded, text_embed_dim,
-                          use_attn=False, upsample=True, num_resnet_blocks=resnet_blocks_per_level,
+                          use_attn=True, upsample=True, num_resnet_blocks=resnet_blocks_per_level,  # Enable attn
                           skip_channels=channels[2])
         self.up2 = UpBlock(channels[1], channels[0], time_emb_dim_expanded, text_embed_dim,
-                          use_attn=False, upsample=True, num_resnet_blocks=resnet_blocks_per_level,
+                          use_attn=True, upsample=True, num_resnet_blocks=resnet_blocks_per_level,  # Enable attn
                           skip_channels=channels[1])
         self.up3 = UpBlock(channels[0], channels[0], time_emb_dim_expanded, text_embed_dim,
-                          use_attn=False, upsample=False, num_resnet_blocks=resnet_blocks_per_level,
+                          use_attn=False, upsample=False, num_resnet_blocks=resnet_blocks_per_level,  # Keep off at highest res
                           skip_channels=channels[0])
 
         # Output
@@ -456,9 +503,8 @@ class UNet(nn.Module):
         Returns:
             predicted_noise: [batch, 3, 64, 64]
         """
-        # Encode text
-        text_emb = self.text_embedding(text_tokens)  # [batch, seq_len, text_embed_dim]
-        text_context = self.text_encoder(text_emb)  # [batch, seq_len, text_embed_dim]
+        # Encode text with improved transformer encoder
+        text_context = self.text_encoder(text_tokens)  # [batch, seq_len, text_embed_dim]
 
         # Time embedding
         time_emb = self.time_embedding(timesteps)  # [batch, time_emb_dim * 4]

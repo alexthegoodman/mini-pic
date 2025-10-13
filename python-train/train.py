@@ -46,11 +46,12 @@ class TrainingConfig:
 
         # Model
         vocab_size: int = 8192,
-        text_embed_dim: int = 32,
+        text_embed_dim: int = 128,  # Increased default for better text conditioning
         time_embed_dim: int = 32,
         channels: list = None,
         use_mid_attn: bool = False,
         resnet_blocks_per_level: int = 1,
+        text_encoder_layers: int = 4,  # New parameter for transformer depth
 
         # Logging
         log_interval: int = 100,
@@ -94,6 +95,7 @@ class TrainingConfig:
         self.channels = channels or [16, 32, 64]
         self.use_mid_attn = use_mid_attn
         self.resnet_blocks_per_level = resnet_blocks_per_level
+        self.text_encoder_layers = text_encoder_layers
 
         self.log_interval = log_interval
         self.save_interval = save_interval
@@ -206,6 +208,7 @@ class Trainer:
             resnet_blocks_per_level=config.resnet_blocks_per_level,
             channels=config.channels,
             loss_fn=config.loss_fn,
+            text_encoder_layers=config.text_encoder_layers,
         ).to(config.device)
 
         total_params = sum(p.numel() for p in self.model.parameters())
@@ -471,9 +474,9 @@ def main():
         channels=[32, 64, 128], # actually great
         # channels=[64, 128, 256], # maybe slightly better?
         # channels=[128, 256, 512], # does not seem to help
-        # text_embed_dim=32,
         use_mid_attn=True,
-        text_embed_dim=32,
+        text_embed_dim=128,  # INCREASED: Much stronger text conditioning
+        text_encoder_layers=4,  # NEW: Transformer layers for better semantics
         time_embed_dim=32,
         resnet_blocks_per_level=1,
         # does not help with generative quality, currently

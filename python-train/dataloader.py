@@ -83,7 +83,7 @@ class DiffusionDataset(Dataset):
 
         # Parse JSON files
         for json_file in json_files:
-            with open(json_file, 'r') as f:
+            with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
             for image_filename, metadata in data.items():
