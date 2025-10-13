@@ -57,20 +57,20 @@ class TimeEmbedding(nn.Module):
 # ============================================================================
 
 class SelfAttention(nn.Module):
-    """Multi-head self-attention"""
+    """Multi-head self-attention using PyTorch's nn.MultiheadAttention"""
 
     def __init__(self, channels: int, n_heads: int = 4):
         super().__init__()
         assert channels % n_heads == 0, "channels must be divisible by n_heads"
 
         self.channels = channels
-        self.n_heads = n_heads
-        self.d_head = channels // n_heads
 
-        self.query = nn.Linear(channels, channels)
-        self.key = nn.Linear(channels, channels)
-        self.value = nn.Linear(channels, channels)
-        self.proj_out = nn.Linear(channels, channels)
+        # PyTorch's MultiheadAttention (batch_first=True for easier usage)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=channels,
+            num_heads=n_heads,
+            batch_first=True,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -79,63 +79,48 @@ class SelfAttention(nn.Module):
         Returns:
             [batch, seq_len, channels]
         """
-        batch_size, seq_len, channels = x.shape
-
-        q = self.query(x).view(batch_size, seq_len, self.n_heads, self.d_head).transpose(1, 2)
-        k = self.key(x).view(batch_size, seq_len, self.n_heads, self.d_head).transpose(1, 2)
-        v = self.value(x).view(batch_size, seq_len, self.n_heads, self.d_head).transpose(1, 2)
-
-        # Attention: softmax(Q @ K^T / sqrt(d_head)) @ V
-        scale = math.sqrt(self.d_head)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / scale  # [batch, n_heads, seq_len, seq_len]
-        attn = F.softmax(scores, dim=-1)
-
-        out = torch.matmul(attn, v)  # [batch, n_heads, seq_len, d_head]
-        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, channels)
-
-        return self.proj_out(out)
+        # For self-attention: query=key=value=x
+        out, _ = self.attn(x, x, x)
+        return out
 
 
 class CrossAttention(nn.Module):
-    """Multi-head cross-attention between query and context"""
+    """Multi-head cross-attention using PyTorch's nn.MultiheadAttention"""
 
     def __init__(self, channels: int, context_dim: int, n_heads: int = 4):
         super().__init__()
         assert channels % n_heads == 0, "channels must be divisible by n_heads"
 
         self.channels = channels
-        self.n_heads = n_heads
-        self.d_head = channels // n_heads
+        self.context_dim = context_dim
 
-        self.query = nn.Linear(channels, channels)
-        self.key = nn.Linear(context_dim, channels)
-        self.value = nn.Linear(context_dim, channels)
-        self.proj_out = nn.Linear(channels, channels)
+        # Project context to match channels dimension if different
+        self.context_proj = nn.Linear(context_dim, channels) if context_dim != channels else None
+
+        # PyTorch's MultiheadAttention (batch_first=True for easier usage)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=channels,
+            num_heads=n_heads,
+            batch_first=True,
+        )
 
     def forward(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: [batch, seq_len, channels]
-            context: [batch, context_len, context_dim]
+            x: [batch, seq_len, channels] - query
+            context: [batch, context_len, context_dim] - key and value
         Returns:
             [batch, seq_len, channels]
         """
-        batch_size, seq_len, channels = x.shape
-        context_len = context.shape[1]
+        # Project context if needed
+        if self.context_proj is not None:
+            context = self.context_proj(context)
 
-        q = self.query(x).view(batch_size, seq_len, self.n_heads, self.d_head).transpose(1, 2)
-        k = self.key(context).view(batch_size, context_len, self.n_heads, self.d_head).transpose(1, 2)
-        v = self.value(context).view(batch_size, context_len, self.n_heads, self.d_head).transpose(1, 2)
+        # MultiheadAttention expects (query, key, value)
+        # For cross-attention: query=x, key=context, value=context
+        out, _ = self.attn(x, context, context)
 
-        # Attention
-        scale = math.sqrt(self.d_head)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / scale
-        attn = F.softmax(scores, dim=-1)
-
-        out = torch.matmul(attn, v)
-        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, channels)
-
-        return self.proj_out(out)
+        return out
 
 
 # ============================================================================
@@ -552,10 +537,11 @@ class UNet(nn.Module):
 
         # Select loss function
         if self.loss_fn == "mse":
-            # loss = F.mse_loss(predicted_noise, batch['noise'], reduction='sum') # testing sum to see if helps with batches
-            loss = F.mse_loss(predicted_noise, batch['noise'])
+            loss = F.mse_loss(predicted_noise, batch['noise'], reduction='sum') # testing sum to see if helps reveal actual loss (mean is too small)
+            # loss = F.mse_loss(predicted_noise, batch['noise'])
         elif self.loss_fn == "l1":
-            loss = F.l1_loss(predicted_noise, batch['noise'])
+            # loss = F.l1_loss(predicted_noise, batch['noise'])
+            loss = F.l1_loss(predicted_noise, batch['noise'], reduction='sum')
         elif self.loss_fn == "smooth_l1":
             loss = F.smooth_l1_loss(predicted_noise, batch['noise'])
         elif self.loss_fn == "huber":

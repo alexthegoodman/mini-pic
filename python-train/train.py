@@ -451,13 +451,15 @@ def main():
     """Main training function"""
     config = TrainingConfig(
         # For quick testing - remove max_samples for full training
+        # max_samples=40000,
         # max_samples=80000,
         max_samples=320000,
         num_epochs=50,
         # batch_size=4, # just curious
         batch_size=16, # good sweet spot for quality and speed
+        # batch_size=32,
         # batch_size=64, # supposed to be faster training, but really each batch becomes slower
-        learning_rate=1e-3,
+        learning_rate=1e-6,
         warmup_steps=500, # warms up to lr after 500 batches, then decays back down over the whole training regimen
 
         # Loss function
@@ -465,18 +467,21 @@ def main():
 
         # Sample generation
         generate_samples=True,
-        sample_interval=5,  # Generate every 5 epochs
+        sample_interval=1,  # Generate every x epochs
         num_samples_per_prompt=4,
         use_ddim=True,
         ddim_steps=50,
 
         # Quality hyperparameters
-        channels=[32, 64, 128], # actually great
-        # channels=[64, 128, 256], # maybe slightly better?
+        # channels=[8, 16, 32], # per pixel, but small image?
+        # channels=[32, 64, 128], # actually great
+        channels=[64, 128, 256], # maybe slightly better?
         # channels=[128, 256, 512], # does not seem to help
         use_mid_attn=True,
-        text_embed_dim=128,  # INCREASED: Much stronger text conditioning
-        text_encoder_layers=4,  # NEW: Transformer layers for better semantics
+        # text_embed_dim=128,  # INCREASED: Much stronger text conditioning
+        # text_encoder_layers=4,  # NEW: Transformer layers for better semantics
+        text_embed_dim=64,  # INCREASED: Much stronger text conditioning
+        text_encoder_layers=2,  # NEW: Transformer layers for better semantics
         time_embed_dim=32,
         resnet_blocks_per_level=1,
         # does not help with generative quality, currently
