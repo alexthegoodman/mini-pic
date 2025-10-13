@@ -506,7 +506,8 @@ class UNet(nn.Module):
 
         # Select loss function
         if self.loss_fn == "mse":
-            loss = F.mse_loss(predicted_noise, batch['noise'], reduction='sum') # testing sum to see if helps with batches
+            # loss = F.mse_loss(predicted_noise, batch['noise'], reduction='sum') # testing sum to see if helps with batches
+            loss = F.mse_loss(predicted_noise, batch['noise'])
         elif self.loss_fn == "l1":
             loss = F.l1_loss(predicted_noise, batch['noise'])
         elif self.loss_fn == "smooth_l1":

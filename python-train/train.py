@@ -19,8 +19,8 @@ class TrainingConfig:
     def __init__(
         self,
         # Paths
-        json_dir: str = "../../diffusiondb/unzipped-json/",
-        image_dir: str = "../../diffusiondb/unzipped-64/",
+        json_dir: str = "../../diffusiondb/unzipped-json-augmented/",
+        image_dir: str = "../../diffusiondb/unzipped-64-augmented/",
         tokenizer_path: str = "../tokenizer.json",
         checkpoint_dir: str = "./checkpoints",
 
@@ -448,7 +448,8 @@ def main():
     """Main training function"""
     config = TrainingConfig(
         # For quick testing - remove max_samples for full training
-        max_samples=80000,  # Use 1000 samples for testing
+        # max_samples=80000,
+        max_samples=320000,
         num_epochs=50,
         # batch_size=4, # just curious
         batch_size=16, # good sweet spot for quality and speed

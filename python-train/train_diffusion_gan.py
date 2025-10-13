@@ -86,8 +86,8 @@ class DiffusionGANConfig:
     def __init__(
         self,
         # Paths
-        json_dir: str = "../../diffusiondb/unzipped-json/",
-        image_dir: str = "../../diffusiondb/unzipped-64/",
+        json_dir: str = "../../diffusiondb/unzipped-json-augmented/",
+        image_dir: str = "../../diffusiondb/unzipped-64-augmented/",
         tokenizer_path: str = "../tokenizer.json",
         checkpoint_dir: str = "./checkpoints_gan",
 
