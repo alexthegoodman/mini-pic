@@ -26,3 +26,7 @@ path = "src/bin/preprocess.rs"
 [[bin]]
 name = "train_tokenizer"
 path = "src/bin/train_tokenizer.rs"
+
+[[bin]]
+name = "augment"
+path = "src/bin/augment.rs"
