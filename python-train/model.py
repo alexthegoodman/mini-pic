@@ -390,6 +390,7 @@ class UNet(nn.Module):
         use_mid_attn: bool = False,
         resnet_blocks_per_level: int = 1,
         channels: Optional[List[int]] = None,
+        loss_fn: str = "mse",
     ):
         super().__init__()
 
@@ -397,6 +398,7 @@ class UNet(nn.Module):
             channels = [16, 32, 64]
 
         self.channels = channels
+        self.loss_fn = loss_fn
         time_emb_dim_expanded = time_embed_dim * 4
 
         # Text encoder
@@ -489,7 +491,7 @@ class UNet(nn.Module):
 
     def compute_loss(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute MSE loss between predicted and actual noise
+        Compute loss between predicted and actual noise using the configured loss function
 
         Args:
             batch: Dictionary with keys 'noisy_images', 'timesteps', 'text_tokens', 'noise'
@@ -502,6 +504,16 @@ class UNet(nn.Module):
             batch['text_tokens'],
         )
 
-        loss = F.mse_loss(predicted_noise, batch['noise'])
+        # Select loss function
+        if self.loss_fn == "mse":
+            loss = F.mse_loss(predicted_noise, batch['noise'], reduction='sum') # testing sum to see if helps with batches
+        elif self.loss_fn == "l1":
+            loss = F.l1_loss(predicted_noise, batch['noise'])
+        elif self.loss_fn == "smooth_l1":
+            loss = F.smooth_l1_loss(predicted_noise, batch['noise'])
+        elif self.loss_fn == "huber":
+            loss = F.huber_loss(predicted_noise, batch['noise'])
+        else:
+            raise ValueError(f"Unknown loss function: {self.loss_fn}")
 
         return loss, predicted_noise

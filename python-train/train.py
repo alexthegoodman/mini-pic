@@ -38,6 +38,9 @@ class TrainingConfig:
         weight_decay: float = 1e-2,
         betas: tuple = (0.9, 0.999),
 
+        # Loss function
+        loss_fn: str = "mse",  # Options: "mse", "l1", "smooth_l1", "huber"
+
         # Scheduler
         warmup_steps: int = 1000,
 
@@ -80,6 +83,8 @@ class TrainingConfig:
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.betas = betas
+
+        self.loss_fn = loss_fn
 
         self.warmup_steps = warmup_steps
 
@@ -129,6 +134,7 @@ class Trainer:
         print(f"Device: {config.device}")
         print(f"Batch size: {config.batch_size}")
         print(f"Learning rate: {config.learning_rate}")
+        print(f"Loss function: {config.loss_fn}")
         print(f"Warmup steps: {config.warmup_steps}")
         print(f"Epochs: {config.num_epochs}")
         print(f"Weight decay: {config.weight_decay}")
@@ -199,6 +205,7 @@ class Trainer:
             use_mid_attn=config.use_mid_attn,
             resnet_blocks_per_level=config.resnet_blocks_per_level,
             channels=config.channels,
+            loss_fn=config.loss_fn,
         ).to(config.device)
 
         total_params = sum(p.numel() for p in self.model.parameters())
@@ -443,10 +450,14 @@ def main():
         # For quick testing - remove max_samples for full training
         max_samples=80000,  # Use 1000 samples for testing
         num_epochs=50,
+        # batch_size=4, # just curious
         batch_size=16, # good sweet spot for quality and speed
         # batch_size=64, # supposed to be faster training, but really each batch becomes slower
         learning_rate=1e-3,
         warmup_steps=500, # warms up to lr after 500 batches, then decays back down over the whole training regimen
+
+        # Loss function
+        loss_fn="mse",  # Options: "mse", "l1", "smooth_l1", "huber"
 
         # Sample generation
         generate_samples=True,
