@@ -69,7 +69,8 @@ class DiffusionDataset(Dataset):
         json_files = sorted(json_path.glob("*.json"))
 
         # Calculate how many files we need based on max_samples
-        APPROX_ITEMS_PER_JSON = 1000
+        # APPROX_ITEMS_PER_JSON = 1000
+        APPROX_ITEMS_PER_JSON = 12000 # increased due to augmented
         if max_samples is not None:
             files_needed = min(
                 (max_samples + APPROX_ITEMS_PER_JSON - 1) // APPROX_ITEMS_PER_JSON,
