@@ -66,6 +66,67 @@ impl TrainingConfig {
     }
 }
 
+/// All presets keep the five feature levels needed for a 4x4 bottleneck.
+/// Width and ResNet count are the two main capacity choices; text and time
+/// settings stay fixed so runs can be compared more directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UNetPreset {
+    Compact,
+    Balanced,
+    Wide,
+    Deep,
+}
+
+impl UNetPreset {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "compact" => Some(Self::Compact),
+            "balanced" => Some(Self::Balanced),
+            "wide" => Some(Self::Wide),
+            "deep" => Some(Self::Deep),
+            _ => None,
+        }
+    }
+
+    fn from_env() -> Self {
+        match std::env::var("MINI_PIC_UNET_PRESET") {
+            Ok(value) => Self::parse(&value).unwrap_or_else(|| {
+                panic!("unknown MINI_PIC_UNET_PRESET '{value}'; choose compact, balanced, wide, or deep")
+            }),
+            Err(std::env::VarError::NotPresent) => Self::Balanced,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                panic!("MINI_PIC_UNET_PRESET must be valid Unicode")
+            }
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Balanced => "balanced",
+            Self::Wide => "wide",
+            Self::Deep => "deep",
+        }
+    }
+
+    fn model_config(self) -> UNetConfig {
+        let (channels, resnet_blocks_per_level) = match self {
+            Self::Compact => (vec![16, 32, 64, 64, 64], 1),
+            Self::Balanced => (vec![16, 32, 64, 64, 64], 2),
+            Self::Wide => (vec![32, 64, 128, 128, 128], 2),
+            Self::Deep => (vec![16, 32, 64, 64, 64], 4),
+        };
+
+        UNetConfig::new(channels)
+            .with_vocab_size(4096) // Replaced with the loaded tokenizer's size.
+            .with_text_embed_dim(64)
+            .with_text_encoder_layers(8)
+            .with_time_embed_dim(32)
+            .with_use_mid_attn(true)
+            .with_resnet_blocks_per_level(resnet_blocks_per_level)
+    }
+}
+
 const AUGMENTATION_SUFFIXES: [&str; 12] = [
     "_flip", "_vflip", "_rot90", "_rot180", "_rot270", "_blur",
     "_strongblur", "_bright", "_dark", "_gray", "_hcontrast", "_lcontrast",
@@ -107,12 +168,6 @@ fn split_by_source(
     (train, valid)
 }
 
-// No Default impl here on purpose - it previously duplicated run()'s channel
-// width (vec![16, 32, 64], with a second vec![64, 128, 256] commented out
-// beside it) in a way nothing ever actually called. run()'s own
-// TrainingConfig::new(...) below is the one active place that picks these
-// numbers; keep it that way rather than adding a second copy back.
-
 fn create_artifact_dir(artifact_dir: &str) {
     // Remove existing artifacts to get an accurate learner summary
     std::fs::remove_dir_all(artifact_dir).ok();
@@ -153,18 +208,8 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
         .with_beta_2(0.999)
         .with_epsilon(1e-8);
 
-    // Match the active Python U-Net's width and embedding configuration.
-    // Keep ResNet depth at one block per level, as in the active Python run.
-    let model_config = UNetConfig::new(vec![
-        // 64, 128, 256
-        16, 32, 64
-    ])
-        .with_vocab_size(4096) // Will be updated after loading tokenizer
-        .with_text_embed_dim(64)
-        .with_text_encoder_layers(8)
-        .with_time_embed_dim(32)
-        .with_use_mid_attn(true)
-        .with_resnet_blocks_per_level(16);
+    let unet_preset = UNetPreset::from_env();
+    let model_config = unet_preset.model_config();
 
     let mut config = TrainingConfig::new(
         optimizer,
@@ -186,7 +231,9 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
     println!("Learning rate schedule: constant");
     println!("Epochs: {}", config.num_epochs);
     println!("Weight decay: 1e-2");
+    println!("U-Net preset: {}", unet_preset.name());
     println!("Model channels: {:?}", config.model.channels);
+    println!("ResNet blocks per level: {}", config.model.resnet_blocks_per_level);
     println!("Text embed dim: {}", config.model.text_embed_dim);
     println!("==============================================\n");
 
@@ -353,16 +400,28 @@ pub fn print_training_tips() {
     println!("==========================================\n");
 }
 
-// create_large_model_config() (a fourth, never-called copy of the channel
-// widths - vec![128, 256, 512, 512], four elements against UNetConfig::init's
-// hard-coded 3 down/up levels, so channels[3] was silently ignored even if it
-// had been used) was removed here. Scale run()'s own model_config up instead
-// of reviving a second, independently-drifting config builder.
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dataset::DiffusionMetadata;
+
+    #[test]
+    fn unet_presets_have_five_levels_and_expected_resnet_counts() {
+        for (name, channels, blocks) in [
+            ("compact", vec![16, 32, 64, 64, 64], 1),
+            ("balanced", vec![16, 32, 64, 64, 64], 2),
+            ("wide", vec![32, 64, 128, 128, 128], 2),
+            ("deep", vec![16, 32, 64, 64, 64], 4),
+        ] {
+            let preset = UNetPreset::parse(name).unwrap();
+            let config = preset.model_config();
+            assert_eq!(preset.name(), name);
+            assert_eq!(config.channels, channels);
+            assert_eq!(config.resnet_blocks_per_level, blocks);
+            assert!(config.use_mid_attn);
+        }
+        assert_eq!(UNetPreset::parse("unknown"), None);
+    }
 
     #[test]
     fn augmented_variants_stay_in_one_split() {

@@ -484,7 +484,7 @@ impl<B: Backend> UpBlock<B> {
         // always arrives at in_channels width (it's the previous stage's
         // output, chained through), and the matching encoder-level skip
         // tensor is also always in_channels wide in this UNet's symmetric
-        // wiring (e.g. skip3 is channels[2] wide, matching up1's
+        // wiring (e.g. skip5 is channels[4] wide, matching up1's
         // in_channels) - so the concatenated width is 2 * in_channels, not
         // in_channels + out_channels.
         let mut resnets = Vec::with_capacity(num_resnet_blocks);
@@ -689,6 +689,8 @@ pub struct UNet<B: Backend> {
     down1: DownBlock<B>,
     down2: DownBlock<B>,
     down3: DownBlock<B>,
+    down4: DownBlock<B>,
+    down5: DownBlock<B>,
 
     // Bottleneck
     mid_block1: ResNetBlock<B>,
@@ -699,6 +701,8 @@ pub struct UNet<B: Backend> {
     up1: UpBlock<B>,
     up2: UpBlock<B>,
     up3: UpBlock<B>,
+    up4: UpBlock<B>,
+    up5: UpBlock<B>,
 
     // Output
     norm_out: GroupNorm<B>,
@@ -733,7 +737,7 @@ pub struct UNetConfig {
     pub time_embed_dim: usize,
     #[config(default = false)]
     pub use_mid_attn: bool,
-    #[config(default = 8)]
+    #[config(default = 2)]
     pub resnet_blocks_per_level: usize,  // ResNet blocks stacked per down/up level (>= 1, uncapped)
     pub channels: Vec<usize>,
 }
@@ -748,6 +752,7 @@ pub struct UNetConfig {
 
 impl UNetConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> UNet<B> {
+        assert_eq!(self.channels.len(), 5, "the 4x4 U-Net requires five channel widths");
         let time_emb_dim = self.time_embed_dim * 4;
 
         // Text encoder
@@ -768,7 +773,7 @@ impl UNetConfig {
             .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
             .init(device);
 
-        // // Down blocks (64x64 -> 32x32 -> 16x16 -> 8x8)
+        // Five feature levels: 64 -> 32 -> 16 -> 8 -> 4 pixels.
         let down1 = DownBlock::new(
             self.channels[0],
             self.channels[0],
@@ -784,7 +789,7 @@ impl UNetConfig {
             self.channels[1],
             time_emb_dim,
             self.text_embed_dim,
-            true, // use_attn - text conditioning must enter somewhere below mid_attn, matching model.py's down2/down3
+            true, // text conditioning enters below the bottleneck
             true,
             self.resnet_blocks_per_level,
             device,
@@ -795,34 +800,42 @@ impl UNetConfig {
             time_emb_dim,
             self.text_embed_dim,
             true, // use_attn
-            false,
+            true,
             self.resnet_blocks_per_level,
             device,
         );
+        let down4 = DownBlock::new(
+            self.channels[2], self.channels[3], time_emb_dim, self.text_embed_dim,
+            true, true, self.resnet_blocks_per_level, device,
+        );
+        let down5 = DownBlock::new(
+            self.channels[3], self.channels[4], time_emb_dim, self.text_embed_dim,
+            true, false, self.resnet_blocks_per_level, device,
+        );
 
-        // Bottleneck at 16x16
-        let mid_block1 = ResNetBlock::new(self.channels[2], self.channels[2], time_emb_dim, device);
+        // Bottleneck at 4x4.
+        let mid_block1 = ResNetBlock::new(self.channels[4], self.channels[4], time_emb_dim, device);
         let mid_attn = if self.use_mid_attn {
-            Some(AttentionBlock::new(self.channels[2], self.text_embed_dim, 4, device))
+            Some(AttentionBlock::new(self.channels[4], self.text_embed_dim, 4, device))
         } else {
             None
         };
-        let mid_block2 = ResNetBlock::new(self.channels[2], self.channels[2], time_emb_dim, device);
+        let mid_block2 = ResNetBlock::new(self.channels[4], self.channels[4], time_emb_dim, device);
 
         // Up blocks
         let up1 = UpBlock::new(
-            self.channels[2],
-            self.channels[1],
+            self.channels[4],
+            self.channels[3],
             time_emb_dim,
             self.text_embed_dim,
-            true, // use_attn - mirrors down2/down3, matching model.py's up1/up2
+            true, // text conditioning in the decoder
             true,
             self.resnet_blocks_per_level,
             device,
         );
         let up2 = UpBlock::new(
-            self.channels[1],
-            self.channels[0],
+            self.channels[3],
+            self.channels[2],
             time_emb_dim,
             self.text_embed_dim,
             true, // use_attn
@@ -831,12 +844,22 @@ impl UNetConfig {
             device,
         );
         let up3 = UpBlock::new(
-            self.channels[0],
-            self.channels[0],
+            self.channels[2],
+            self.channels[1],
             time_emb_dim,
             self.text_embed_dim,
-            false, // use_attn
-            false,
+            true,
+            true,
+            self.resnet_blocks_per_level,
+            device,
+        );
+        let up4 = UpBlock::new(
+            self.channels[1], self.channels[0], time_emb_dim, self.text_embed_dim,
+            true, true, self.resnet_blocks_per_level, device,
+        );
+        let up5 = UpBlock::new(
+            self.channels[0], self.channels[0], time_emb_dim, self.text_embed_dim,
+            false, false,
             self.resnet_blocks_per_level,
             device,
         );
@@ -856,12 +879,16 @@ impl UNetConfig {
             down1,
             down2,
             down3,
+            down4,
+            down5,
             mid_block1,
             mid_attn,
             mid_block2,
             up1,
             up2,
             up3,
+            up4,
+            up5,
             norm_out,
             conv_out,
             activation: Gelu::new(),
@@ -891,18 +918,23 @@ impl<B: Backend> UNet<B> {
         let (h1, skip1) = self.down1.forward(h, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
         let (h2, skip2) = self.down2.forward(h1, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
         let (h3, skip3) = self.down3.forward(h2, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        let (h4, skip4) = self.down4.forward(h3, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        let (h5, skip5) = self.down5.forward(h4, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        debug_assert_eq!(&h5.dims()[2..], &[4, 4], "expected a 4x4 bottleneck");
 
         // Bottleneck
-        let mut h = self.mid_block1.forward(h3, time_emb.clone());
+        let mut h = self.mid_block1.forward(h5, time_emb.clone());
         if let Some(ref attn) = self.mid_attn {
             h = attn.forward(h, text_context.clone(), text_mask_pad.clone());
         }
         h = self.mid_block2.forward(h, time_emb.clone());
 
         // Decoder
-        h = self.up1.forward(h, skip3, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
-        h = self.up2.forward(h, skip2, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
-        h = self.up3.forward(h, skip1, time_emb, text_context, text_mask_pad);
+        h = self.up1.forward(h, skip5, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        h = self.up2.forward(h, skip4, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        h = self.up3.forward(h, skip3, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        h = self.up4.forward(h, skip2, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        h = self.up5.forward(h, skip1, time_emb, text_context, text_mask_pad);
 
         // Output
         h = self.norm_out.forward(h);

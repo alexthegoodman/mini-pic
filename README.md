@@ -30,10 +30,21 @@ defaults use the same augmented output folder.
 The native trainer defaults to 1,000 augmented images for a smoke run
 (`total_samples = 1_000`). Set `total_samples = 0` in `src/training.rs` to use
 all images. It keeps augmentations of one source image in the same train or
-validation split. The active native run now uses the Python run's U-Net widths
-`[64, 128, 256]`, batch size 16, time embedding 32, text embedding 64, and two
-text encoder layers. It retains standard epsilon MSE and uses the configured
-learning rate directly. A low MSE alone does not establish image quality.
+validation split. Every native U-Net preset has four downsampling stages
+(64 -> 32 -> 16 -> 8 -> 4), matching upsampling stages, and eight text encoder
+layers. Select a preset with `$env:MINI_PIC_UNET_PRESET = 'balanced'` before
+training; `balanced` is the default.
+
+| Preset | Channel widths | ResNet blocks per down/up level |
+| --- | --- | ---: |
+| `compact` | `[16, 32, 64, 64, 64]` | 1 |
+| `balanced` (default) | `[16, 32, 64, 64, 64]` | 2 |
+| `wide` | `[32, 64, 128, 128, 128]` | 2 |
+| `deep` | `[16, 32, 64, 64, 64]` | 4 |
+
+Each preset gets a distinct checkpoint directory from its widths and ResNet
+count. Earlier three-level checkpoints are incompatible; training quality needs
+a fresh run to verify.
 
 `cargo run --release --bin infer -- "<prompt>" <model_dir> [steps] [output_path]` to generate an
 image. `model_dir` is the "Artifact dir: ..." path training printed at the start of that run
