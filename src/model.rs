@@ -1,16 +1,18 @@
-use crate::dataset::{DiffusionBatch, IMAGE_CHANNELS};
+use crate::dataset::{DiffusionBatch, IMAGE_CHANNELS, MAX_SEQ_LEN};
 use burn::{
     config::Config,
     module::Module,
     nn::{
         conv::{Conv2d, Conv2dConfig},
         loss::MseLoss,
+        transformer::{TransformerEncoder, TransformerEncoderConfig, TransformerEncoderInput},
         Embedding, EmbeddingConfig, Gelu, GroupNorm, GroupNormConfig, Linear, LinearConfig,
+        PositionalEncoding, PositionalEncodingConfig,
     },
     tensor::{
         activation::softmax,
         backend::{AutodiffBackend, Backend},
-        Int, Tensor,
+        Bool, Int, Tensor,
     },
     train::{
         RegressionOutput, TrainOutput, TrainStep, ValidStep,
@@ -547,14 +549,87 @@ impl<B: Backend> UpBlock<B> {
 }
 
 // ============================================================================
+// Text Encoder (Transformer)
+// ============================================================================
+
+/// Token embedding + sinusoidal positional encoding + an N-layer self-attention
+/// transformer encoder + a final projection - the standard text-tower shape
+/// (comparable to python-train's TextEncoder, which uses PyTorch's
+/// nn.TransformerEncoder over a *learned* positional embedding; this uses
+/// burn's own sinusoidal PositionalEncoding instead of adding a second learned
+/// parameter tensor, which is the more common Transformer-original choice and
+/// needs no separate init/shape bookkeeping).
+#[derive(Module, Debug)]
+pub struct TextEncoder<B: Backend> {
+    embedding: Embedding<B>,
+    pos_encoding: PositionalEncoding<B>,
+    transformer: TransformerEncoder<B>,
+    proj: Linear<B>,
+}
+
+impl<B: Backend> TextEncoder<B> {
+    pub fn new(
+        vocab_size: usize,
+        text_embed_dim: usize,
+        n_layers: usize,
+        n_heads: usize,
+        dropout: f64,
+        device: &B::Device,
+    ) -> Self {
+        assert!(
+            text_embed_dim % n_heads == 0,
+            "text_embed_dim must be divisible by text_encoder_heads"
+        );
+
+        let embedding = EmbeddingConfig::new(vocab_size, text_embed_dim).init(device);
+        let pos_encoding = PositionalEncodingConfig::new(text_embed_dim)
+            .with_max_sequence_size(MAX_SEQ_LEN)
+            .init(device);
+        // dim_feedforward = 4x d_model is the "Attention Is All You Need" default,
+        // matching python-train's TextEncoder (dim_feedforward=text_embed_dim*4).
+        let transformer = TransformerEncoderConfig::new(text_embed_dim, text_embed_dim * 4, n_heads, n_layers)
+            .with_dropout(dropout)
+            .init(device);
+        let proj = LinearConfig::new(text_embed_dim, text_embed_dim).init(device);
+
+        Self {
+            embedding,
+            pos_encoding,
+            transformer,
+            proj,
+        }
+    }
+
+    /// Args:
+    /// - text_tokens: [batch, seq_len]
+    /// - mask_pad: True at padding positions (to exclude from attention); None attends over every position.
+    /// Returns: [batch, seq_len, text_embed_dim]
+    pub fn forward(
+        &self,
+        text_tokens: Tensor<B, 2, Int>,
+        mask_pad: Option<Tensor<B, 2, Bool>>,
+    ) -> Tensor<B, 3> {
+        let x = self.embedding.forward(text_tokens);
+        let x = self.pos_encoding.forward(x);
+
+        let mut input = TransformerEncoderInput::new(x);
+        if let Some(mask_pad) = mask_pad {
+            input = input.mask_pad(mask_pad);
+        }
+        let x = self.transformer.forward(input);
+
+        self.proj.forward(x)
+    }
+}
+
+// ============================================================================
 // U-Net Model
 // ============================================================================
 
 #[derive(Module, Debug)]
 pub struct UNet<B: Backend> {
     // Text encoder
-    text_embedding: Embedding<B>,
-    text_encoder: Linear<B>,
+    text_encoder: TextEncoder<B>,
 
     // Time embedding
     time_embedding: TimeEmbedding<B>,
@@ -587,12 +662,21 @@ pub struct UNet<B: Backend> {
 pub struct UNetConfig {
     #[config(default = 8192)]
     pub vocab_size: usize,
-    // Unswept here - python-train's UNet found 64 helped over its own 32
-    // default (see its TextEncoder), but that encoder is a multi-layer
-    // Transformer; this one is Embedding+Linear only, so the two aren't
-    // directly comparable and the value hasn't been tuned on this side yet.
+    // Unswept here - python-train's TextEncoder found 64 helped over its own
+    // 32 default. Both sides now use a real multi-layer Transformer encoder,
+    // so that result should transfer better than it used to when this was
+    // Embedding+Linear only - worth trying once training here is up and running.
     #[config(default = 32)]
     pub text_embed_dim: usize,
+    // Transformer depth/width for the text encoder. python-train's current
+    // active config (see its train.py) uses 2 layers at text_embed_dim=64;
+    // 4 is this side's unswept starting point, matching its own class default.
+    #[config(default = 4)]
+    pub text_encoder_layers: usize,
+    #[config(default = 4)]
+    pub text_encoder_heads: usize,
+    #[config(default = 0.1)]
+    pub text_encoder_dropout: f64,
     #[config(default = 32)]
     pub time_embed_dim: usize,
     #[config(default = false)]
@@ -613,8 +697,14 @@ impl UNetConfig {
         let time_emb_dim = self.time_embed_dim * 4;
 
         // Text encoder
-        let text_embedding = EmbeddingConfig::new(self.vocab_size, self.text_embed_dim).init(device);
-        let text_encoder = LinearConfig::new(self.text_embed_dim, self.text_embed_dim).init(device);
+        let text_encoder = TextEncoder::new(
+            self.vocab_size,
+            self.text_embed_dim,
+            self.text_encoder_layers,
+            self.text_encoder_heads,
+            self.text_encoder_dropout,
+            device,
+        );
 
         // Time embedding
         let time_embedding = TimeEmbedding::new(self.time_embed_dim, device);
@@ -704,7 +794,6 @@ impl UNetConfig {
             .init(device);
 
         UNet {
-            text_embedding,
             text_encoder,
             time_embedding,
             conv_in,
@@ -730,10 +819,10 @@ impl<B: Backend> UNet<B> {
         noisy_images: Tensor<B, 4>,
         timesteps: Tensor<B, 1>,
         text_tokens: Tensor<B, 2, Int>,
+        text_mask_pad: Option<Tensor<B, 2, Bool>>,
     ) -> Tensor<B, 4> {
         // Encode text
-        let text_emb = self.text_embedding.forward(text_tokens);
-        let text_context = self.text_encoder.forward(text_emb); // [batch, seq_len, text_embed_dim]
+        let text_context = self.text_encoder.forward(text_tokens, text_mask_pad); // [batch, seq_len, text_embed_dim]
 
         // Time embedding
         let time_emb = self.time_embedding.forward(timesteps);
@@ -765,11 +854,16 @@ impl<B: Backend> UNet<B> {
     }
 
     pub fn forward_step(&self, batch: DiffusionBatch<B>) -> RegressionOutput<B> {
+        // batch.text_mask is 1.0 at valid tokens / 0.0 at padding (see dataset.rs);
+        // the transformer's mask_pad wants the opposite polarity (true = ignore).
+        let mask_pad = batch.text_mask.clone().equal_elem(0.0);
+
         // Predict noise
         let predicted_noise = self.forward(
             batch.noisy_images.clone(),
             batch.timesteps.clone(),
             batch.text_tokens.clone(),
+            Some(mask_pad),
         );
 
         // Create dummy tensor with correct batch size and shape to bypass model
