@@ -43,7 +43,7 @@ pub struct TrainingConfig {
     /// used to hardcode Some(100) deep inside the function regardless of any
     /// config field, so changing modes meant editing code, not config.
     // #[config(default = 10_000)]
-    #[config(default = 5_000)]
+    #[config(default = 1_000)]
     pub total_samples: usize,
 
     // Learning rate schedule
@@ -119,9 +119,34 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
         .with_epsilon(1e-8);
 
     // Model config - lightweight U-Net
+    //
+    // with_use_mid_attn(true) and with_resnet_blocks_per_level(1) are explicit
+    // here, not left to UNetConfig's class defaults, because this run() is
+    // this repo's documented single source of truth for training hyperparams
+    // (see artifact_dir_name's own comment) and those two defaults were
+    // silently wrong: down1/down2/down3/up1/up2/up3 used to hardcode
+    // use_attn=false regardless of this field (fixed in model.rs - down2,
+    // down3, up1, up2 now pass true, mirroring model.py's use_attn=True at
+    // those same levels), and with mid_attn also defaulting to false, the
+    // model had literally zero attention modules - text_context was computed
+    // every forward pass and then never read, so the image branch's loss
+    // never depended on the prompt at all and the text encoder never
+    // received gradient. That alone explains generating the same
+    // prompt-independent noisy image no matter how long training ran.
+    // resnet_blocks_per_level's class default was separately bumped from 1
+    // to 8 in a past commit with no matching experiment note recorded
+    // anywhere in this repo (unlike every other swept field here, which
+    // documents what was tried) - 8 stacks 48 ResNet blocks total across the
+    // down/up path, which on channels as narrow as [16,32,64] and
+    // total_samples' small default is far more depth than this dataset size
+    // can realistically train in a reasonable number of epochs. Restoring it
+    // to 1 here matches its original default, python-train's active choice,
+    // and lets the newly-restored attention actually get exercised.
     let model_config = UNetConfig::new(vec![16, 32, 64])
         .with_vocab_size(4096) // Will be updated after loading tokenizer
-        .with_text_embed_dim(64);
+        .with_text_embed_dim(64)
+        .with_use_mid_attn(true)
+        .with_resnet_blocks_per_level(1);
 
     let mut config = TrainingConfig::new(
         optimizer,

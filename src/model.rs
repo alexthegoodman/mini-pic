@@ -732,7 +732,7 @@ impl UNetConfig {
             self.channels[1],
             time_emb_dim,
             self.text_embed_dim,
-            false, // use_attn
+            true, // use_attn - text conditioning must enter somewhere below mid_attn, matching model.py's down2/down3
             true,
             self.resnet_blocks_per_level,
             device,
@@ -742,7 +742,7 @@ impl UNetConfig {
             self.channels[2],
             time_emb_dim,
             self.text_embed_dim,
-            false, // use_attn
+            true, // use_attn
             false,
             self.resnet_blocks_per_level,
             device,
@@ -763,7 +763,7 @@ impl UNetConfig {
             self.channels[1],
             time_emb_dim,
             self.text_embed_dim,
-            false, // use_attn
+            true, // use_attn - mirrors down2/down3, matching model.py's up1/up2
             true,
             self.resnet_blocks_per_level,
             device,
@@ -773,7 +773,7 @@ impl UNetConfig {
             self.channels[0],
             time_emb_dim,
             self.text_embed_dim,
-            false, // use_attn
+            true, // use_attn
             true,
             self.resnet_blocks_per_level,
             device,

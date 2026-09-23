@@ -26,4 +26,9 @@ defaults use the same augmented output folder.
 
 
 `cargo run --release --bin mini-pic` to train
-`cargo run --release --bin infer -- "a red apple on a table" "D:/models/mini-pic_ch16-32-64_res8_temb64_tl4_th4_ep10_bs8_lr1e-4" "test-output.png"`
+
+`cargo run --release --bin infer -- "<prompt>" <model_dir> [steps] [output_path]` to generate an
+image. `model_dir` is the "Artifact dir: ..." path training printed at the start of that run
+(steps and output_path are both optional - steps defaults to 50, output_path to `output.png`):
+
+`cargo run --release --bin infer -- "a red apple on a table" "D:/models/mini-pic_ch16-32-64_res1_temb64_tl4_th4_ep10_bs8_lr1e-4" 50 "test-output.png"`
