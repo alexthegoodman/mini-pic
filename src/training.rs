@@ -42,7 +42,7 @@ pub struct TrainingConfig {
     /// This is the one place that decides which mode a run is in - run()
     /// used to hardcode Some(100) deep inside the function regardless of any
     /// config field, so changing modes meant editing code, not config.
-    #[config(default = 0)]
+    #[config(default = 10_000)]
     pub total_samples: usize,
 
     // Learning rate schedule
@@ -96,7 +96,7 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
     // Model config - lightweight U-Net
     let model_config = UNetConfig::new(vec![16, 32, 64])
         .with_vocab_size(4096) // Will be updated after loading tokenizer
-        .with_text_embed_dim(32);
+        .with_text_embed_dim(64);
 
     let mut config = TrainingConfig::new(
         optimizer,
@@ -104,9 +104,9 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
         data_paths::augmented_dir().to_string_lossy().into_owned(),
         data_paths::augmented_dir().to_string_lossy().into_owned(),
         "tokenizer.json".to_string(),
-    )
+    );
     // Quick-test size; pass 0 for a full production run over every image found.
-    .with_total_samples(2000);
+    // .with_total_samples(2000); // do not set here, keep one source of truth for hyperparams in the config defaults
     B::seed(config.seed);
 
     println!("=== Diffusion Model Training Configuration ===");

@@ -236,7 +236,10 @@ impl<B: Backend> ResNetBlock<B> {
             .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
             .init(device);
 
-        let norm1 = GroupNormConfig::new(8, out_channels).init(device);
+        // norm1 runs on x before conv1 changes the channel count, so it must
+        // be sized to in_channels, not out_channels - norm2 runs after conv1
+        // and is correctly sized to out_channels already.
+        let norm1 = GroupNormConfig::new(8, in_channels).init(device);
         let norm2 = GroupNormConfig::new(8, out_channels).init(device);
 
         let time_mlp = LinearConfig::new(time_emb_dim, out_channels).init(device);
@@ -468,9 +471,15 @@ impl<B: Backend> UpBlock<B> {
         device: &B::Device,
     ) -> Self {
         assert!(num_resnet_blocks >= 1, "num_resnet_blocks must be at least 1");
-        // Only the first block absorbs the concatenated skip connection.
+        // Only the first block absorbs the concatenated skip connection. x
+        // always arrives at in_channels width (it's the previous stage's
+        // output, chained through), and the matching encoder-level skip
+        // tensor is also always in_channels wide in this UNet's symmetric
+        // wiring (e.g. skip3 is channels[2] wide, matching up1's
+        // in_channels) - so the concatenated width is 2 * in_channels, not
+        // in_channels + out_channels.
         let mut resnets = Vec::with_capacity(num_resnet_blocks);
-        resnets.push(ResNetBlock::new(in_channels + out_channels, out_channels, time_emb_dim, device));
+        resnets.push(ResNetBlock::new(in_channels * 2, out_channels, time_emb_dim, device));
         for _ in 1..num_resnet_blocks {
             resnets.push(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device));
         }
@@ -482,9 +491,15 @@ impl<B: Backend> UpBlock<B> {
         };
 
         let upsample = if upsample {
-            // Use ConvTranspose2d for upsampling
+            // Refines features after forward()'s manual nearest-neighbor 2x
+            // repeat (which does the actual, exact doubling). This conv must
+            // be spatial-size-preserving: a 4x4 kernel at stride 1 with
+            // padding 1 shrinks the output by 1px (input + 2*1 - 4 + 1 =
+            // input - 1), which desyncs it from the skip connection it's
+            // concatenated with one level up. 3x3/stride1/pad1 preserves
+            // size exactly, same as every conv in ResNetBlock.
             Some(
-                Conv2dConfig::new([out_channels, out_channels], [4, 4])
+                Conv2dConfig::new([out_channels, out_channels], [3, 3])
                     .with_stride([1, 1])
                     .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
                     .init(device),
