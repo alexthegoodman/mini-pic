@@ -37,10 +37,10 @@ training; `balanced` is the default.
 
 | Preset | Channel widths | ResNet blocks per down/up level |
 | --- | --- | ---: |
-| `compact` | `[16, 32, 64, 64, 64]` | 1 |
+| `compact` | `[8, 16, 32, 32, 32]` | 2 |
 | `balanced` (default) | `[16, 32, 64, 64, 64]` | 2 |
 | `wide` | `[32, 64, 128, 128, 128]` | 2 |
-| `deep` | `[16, 32, 64, 64, 64]` | 4 |
+| `extra-wide` | `[64, 128, 256, 256, 256]` | 2 |
 
 Each preset gets a distinct checkpoint directory from its widths and ResNet
 count. Earlier three-level checkpoints are incompatible; training quality needs

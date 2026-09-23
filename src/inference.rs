@@ -7,7 +7,7 @@ use burn::{
 use std::path::Path;
 
 use crate::{
-    dataset::{NoiseSchedule, TextTokenizer, IMAGE_CHANNELS, IMAGE_SIZE, MAX_SEQ_LEN, NUM_TIMESTEPS},
+    dataset::{NoiseSchedule, TextTokenizer, IMAGE_CHANNELS, IMAGE_SIZE, GRID_SIZE, MAX_SEQ_LEN, NUM_TIMESTEPS},
     model::UNet,
     training::TrainingConfig,
 };
@@ -172,6 +172,47 @@ impl<B: Backend> DiffusionInference<B> {
             &rgb_data,
             IMAGE_SIZE as u32,
             IMAGE_SIZE as u32,
+            image::ColorType::Rgb8,
+        )?;
+
+        println!("Image saved to {}", path);
+        Ok(())
+    }
+
+    /// Save a generated [1, 3, 64, 64] image tensor to a file.
+    /// Converts from [-1, 1] range to [0, 255] RGB.
+    pub fn save_grid_image(image_tensor: Tensor<B, 4>, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let [_batch, channels, height, width] = image_tensor.dims();
+
+        if channels != IMAGE_CHANNELS || height != GRID_SIZE || width != GRID_SIZE {
+            return Err("Invalid image dimensions".into());
+        }
+
+        // Convert to [0, 255] range
+        let image_data: Vec<f32> = ((image_tensor.clone() + 1.0) * 127.5)
+            .clamp(0.0, 255.0)
+            .into_data()
+            .convert::<f32>()
+            .to_vec()
+            .expect("Failed to convert tensor to vec");
+
+        // Convert from CHW to HWC format
+        let mut rgb_data = vec![0u8; GRID_SIZE * GRID_SIZE * 3];
+        for c in 0..IMAGE_CHANNELS {
+            for h in 0..GRID_SIZE {
+                for w in 0..GRID_SIZE {
+                    let chw_idx = c * (GRID_SIZE * GRID_SIZE) + h * GRID_SIZE + w;
+                    let hwc_idx = (h * GRID_SIZE + w) * 3 + c;
+                    rgb_data[hwc_idx] = image_data[chw_idx] as u8;
+                }
+            }
+        }
+
+        image::save_buffer(
+            path,
+            &rgb_data,
+            GRID_SIZE as u32,
+            GRID_SIZE as u32,
             image::ColorType::Rgb8,
         )?;
 

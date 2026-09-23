@@ -23,7 +23,7 @@ pub struct TrainingConfig {
     pub num_epochs: usize,
 
     // #[config(default = 16)]
-    #[config(default = 2)]
+    #[config(default = 8)]
     pub batch_size: usize,
 
     #[config(default = 4)]
@@ -40,7 +40,7 @@ pub struct TrainingConfig {
     /// used to hardcode Some(100) deep inside the function regardless of any
     /// config field, so changing modes meant editing code, not config.
     // #[config(default = 0)]
-    #[config(default = 1_000)]
+    #[config(default = 16_000)]
     pub total_samples: usize,
 
     // Learning rate schedule
@@ -67,14 +67,14 @@ impl TrainingConfig {
 }
 
 /// All presets keep the five feature levels needed for a 4x4 bottleneck.
-/// Width and ResNet count are the two main capacity choices; text and time
-/// settings stay fixed so runs can be compared more directly.
+/// Only channel width varies; ResNet count, text, and time settings stay fixed
+/// so runs can be compared more directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UNetPreset {
     Compact,
     Balanced,
     Wide,
-    Deep,
+    ExtraWide,
 }
 
 impl UNetPreset {
@@ -83,7 +83,7 @@ impl UNetPreset {
             "compact" => Some(Self::Compact),
             "balanced" => Some(Self::Balanced),
             "wide" => Some(Self::Wide),
-            "deep" => Some(Self::Deep),
+            "extra-wide" => Some(Self::ExtraWide),
             _ => None,
         }
     }
@@ -91,9 +91,9 @@ impl UNetPreset {
     fn from_env() -> Self {
         match std::env::var("MINI_PIC_UNET_PRESET") {
             Ok(value) => Self::parse(&value).unwrap_or_else(|| {
-                panic!("unknown MINI_PIC_UNET_PRESET '{value}'; choose compact, balanced, wide, or deep")
+                panic!("unknown MINI_PIC_UNET_PRESET '{value}'; choose compact, balanced, wide, or extra-wide")
             }),
-            Err(std::env::VarError::NotPresent) => Self::Balanced,
+            Err(std::env::VarError::NotPresent) => Self::Wide,
             Err(std::env::VarError::NotUnicode(_)) => {
                 panic!("MINI_PIC_UNET_PRESET must be valid Unicode")
             }
@@ -105,16 +105,16 @@ impl UNetPreset {
             Self::Compact => "compact",
             Self::Balanced => "balanced",
             Self::Wide => "wide",
-            Self::Deep => "deep",
+            Self::ExtraWide => "extra-wide",
         }
     }
 
     fn model_config(self) -> UNetConfig {
-        let (channels, resnet_blocks_per_level) = match self {
-            Self::Compact => (vec![16, 32, 64, 64, 64], 1),
-            Self::Balanced => (vec![16, 32, 64, 64, 64], 2),
-            Self::Wide => (vec![32, 64, 128, 128, 128], 2),
-            Self::Deep => (vec![16, 32, 64, 64, 64], 4),
+        let channels = match self {
+            Self::Compact => vec![8, 16, 32, 32, 32],
+            Self::Balanced => vec![16, 32, 64, 64, 64],
+            Self::Wide => vec![32, 64, 128, 128, 128],
+            Self::ExtraWide => vec![64, 128, 256, 256, 256],
         };
 
         UNetConfig::new(channels)
@@ -123,7 +123,7 @@ impl UNetPreset {
             .with_text_encoder_layers(8)
             .with_time_embed_dim(32)
             .with_use_mid_attn(true)
-            .with_resnet_blocks_per_level(resnet_blocks_per_level)
+            .with_resnet_blocks_per_level(2)
     }
 }
 
@@ -406,18 +406,18 @@ mod tests {
     use crate::dataset::DiffusionMetadata;
 
     #[test]
-    fn unet_presets_have_five_levels_and_expected_resnet_counts() {
-        for (name, channels, blocks) in [
-            ("compact", vec![16, 32, 64, 64, 64], 1),
-            ("balanced", vec![16, 32, 64, 64, 64], 2),
-            ("wide", vec![32, 64, 128, 128, 128], 2),
-            ("deep", vec![16, 32, 64, 64, 64], 4),
+    fn unet_presets_vary_width_with_two_resnets_each() {
+        for (name, channels) in [
+            ("compact", vec![8, 16, 32, 32, 32]),
+            ("balanced", vec![16, 32, 64, 64, 64]),
+            ("wide", vec![32, 64, 128, 128, 128]),
+            ("extra-wide", vec![64, 128, 256, 256, 256]),
         ] {
             let preset = UNetPreset::parse(name).unwrap();
             let config = preset.model_config();
             assert_eq!(preset.name(), name);
             assert_eq!(config.channels, channels);
-            assert_eq!(config.resnet_blocks_per_level, blocks);
+            assert_eq!(config.resnet_blocks_per_level, 2);
             assert!(config.use_mid_attn);
         }
         assert_eq!(UNetPreset::parse("unknown"), None);

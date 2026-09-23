@@ -12,6 +12,7 @@ use tokenizers::Tokenizer;
 
 // Constants
 pub const IMAGE_SIZE: usize = 64;
+pub const GRID_SIZE: usize = 64 * 4;
 pub const IMAGE_CHANNELS: usize = 3;
 pub const MAX_SEQ_LEN: usize = 77; // CLIP standard
 pub const NUM_TIMESTEPS: usize = 1000;
