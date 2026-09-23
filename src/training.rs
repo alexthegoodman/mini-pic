@@ -71,22 +71,11 @@ impl TrainingConfig {
     }
 }
 
-impl Default for TrainingConfig {
-    fn default() -> Self {
-        Self::new(
-            AdamWConfig::new()
-                .with_weight_decay(1e-2) // Standard for diffusion models
-                .with_beta_1(0.9)
-                .with_beta_2(0.999)
-                .with_epsilon(1e-8),
-            // UNetConfig::new(vec![64, 128, 256]),
-            UNetConfig::new(vec![16, 32, 64]),
-            data_paths::augmented_dir().to_string_lossy().into_owned(),
-            data_paths::augmented_dir().to_string_lossy().into_owned(),
-            "tokenizer.json".to_string(),
-        )
-    }
-}
+// No Default impl here on purpose - it previously duplicated run()'s channel
+// width (vec![16, 32, 64], with a second vec![64, 128, 256] commented out
+// beside it) in a way nothing ever actually called. run()'s own
+// TrainingConfig::new(...) below is the one active place that picks these
+// numbers; keep it that way rather than adding a second copy back.
 
 fn create_artifact_dir(artifact_dir: &str) {
     // Remove existing artifacts to get an accurate learner summary
@@ -109,7 +98,7 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
         .with_vocab_size(8192) // Will be updated after loading tokenizer
         .with_text_embed_dim(32);
 
-    let config = TrainingConfig::new(
+    let mut config = TrainingConfig::new(
         optimizer,
         model_config,
         data_paths::augmented_dir().to_string_lossy().into_owned(),
@@ -175,17 +164,17 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
     println!("Train size: {}", train_dataset.len());
     println!("Valid size: {}\n", valid_dataset.len());
 
-    // Update model vocab size from tokenizer
+    // Update model vocab size from the tokenizer, in config itself (not a
+    // separate shadowed local) - config.save() below must persist the exact
+    // shape the model was actually built with, or a later load (see
+    // inference.rs) reconstructs the wrong architecture.
     let vocab_size = train_dataset.tokenizer.vocab_size();
-    let model_config = config
-        .model
-        .clone()
-        .with_vocab_size(vocab_size);
+    config.model = config.model.clone().with_vocab_size(vocab_size);
 
     println!("Tokenizer vocab size: {}", vocab_size);
 
     // Create model
-    let model: crate::model::UNet<B> = model_config.init(&device);
+    let model: crate::model::UNet<B> = config.model.init(&device);
     println!("Model initialized\n");
 
     // Clone tokenizers before moving datasets
@@ -311,26 +300,8 @@ pub fn print_training_tips() {
     println!("==========================================\n");
 }
 
-/// Advanced config for larger models (when scaling up)
-pub fn create_large_model_config() -> TrainingConfig {
-    let optimizer = AdamWConfig::new()
-        .with_weight_decay(1e-2)
-        .with_beta_1(0.9)
-        .with_beta_2(0.999);
-
-    let model_config = UNetConfig::new(vec![128, 256, 512, 512]) // Deeper model
-        .with_vocab_size(8192)
-        .with_text_embed_dim(512);
-
-    TrainingConfig::new(
-        optimizer,
-        model_config,
-        data_paths::augmented_dir().to_string_lossy().into_owned(),
-        data_paths::augmented_dir().to_string_lossy().into_owned(),
-        "tokenizer.json".to_string(),
-    )
-    .with_batch_size(4) // Smaller batch for larger model
-        .with_learning_rate(5e-5) // Lower LR for larger model
-        .with_warmup_steps(2000)
-        .with_num_epochs(300)
-}
+// create_large_model_config() (a fourth, never-called copy of the channel
+// widths - vec![128, 256, 512, 512], four elements against UNetConfig::init's
+// hard-coded 3 down/up levels, so channels[3] was silently ignored even if it
+// had been used) was removed here. Scale run()'s own model_config up instead
+// of reviving a second, independently-drifting config builder.

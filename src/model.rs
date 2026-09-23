@@ -686,11 +686,13 @@ pub struct UNetConfig {
     pub channels: Vec<usize>,
 }
 
-impl Default for UNetConfig {
-    fn default() -> Self {
-        Self::new(vec![16, 32, 64])
-    }
-}
+// No Default impl here on purpose - it duplicated training.rs::run()'s
+// channel width and nothing ever called UNetConfig::default(); every real
+// call site constructs UNetConfig::new(...) explicitly. channels has no
+// #[config(default = ...)] either, since burn's Config derive only accepts
+// literal defaults and this is a Vec - it's a required constructor argument
+// everywhere, which is the point: there is exactly one place (run(), in
+// training.rs) where a new run's channel width should be decided.
 
 impl UNetConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> UNet<B> {

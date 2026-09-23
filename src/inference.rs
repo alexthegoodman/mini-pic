@@ -1,12 +1,15 @@
 use burn::{
+    config::Config,
     module::Module,
     record::{NoStdTrainingRecorder, Recorder},
     tensor::{backend::Backend, Distribution, Int, Tensor},
 };
+use std::path::Path;
 
 use crate::{
     dataset::{NoiseSchedule, TextTokenizer, IMAGE_CHANNELS, IMAGE_SIZE, MAX_SEQ_LEN, NUM_TIMESTEPS},
-    model::{UNet, UNetConfig},
+    model::UNet,
+    training::TrainingConfig,
 };
 
 /// Inference engine for diffusion-based image generation
@@ -29,10 +32,20 @@ impl<B: Backend> DiffusionInference<B> {
         let tokenizer = TextTokenizer::from_file(tokenizer_path)?;
         let vocab_size = tokenizer.vocab_size();
 
-        // Initialize model config with correct vocab size
-        let model_config = UNetConfig::new(vec![64, 128, 256])
-            .with_vocab_size(vocab_size)
-            .with_text_embed_dim(256);
+        // Load the exact architecture this checkpoint was trained with, from
+        // the config.json training::run() saves next to the model file (same
+        // directory). This used to reconstruct an independently-guessed
+        // UNetConfig (channels [64,128,256], text_embed_dim 256) that had
+        // already drifted from every real training config in this repo -
+        // load_record below would either panic on a shape mismatch or,
+        // worse, silently succeed against the wrong architecture.
+        let config_path = Path::new(model_path)
+            .parent()
+            .map(|dir| dir.join("config.json"))
+            .ok_or("model_path has no parent directory to find its config.json in")?;
+        let training_config = TrainingConfig::load(&config_path)
+            .map_err(|e| format!("Failed to load {}: {:?}", config_path.display(), e))?;
+        let model_config = training_config.model.with_vocab_size(vocab_size);
 
         // Load trained model
         println!("Loading model from {}...", model_path);
