@@ -5,7 +5,7 @@ use mini_pic::{
     training,
 };
 
-static ARTIFACT_DIR: &str = "/tmp/mini-pic-v001";
+static ARTIFACT_DIR: &str = "D:/models/mini-pic-v001";
 
 use burn::backend::cuda::{Cuda, CudaDevice};
 
