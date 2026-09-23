@@ -175,7 +175,12 @@ impl<B: Backend> CrossAttention<B> {
         }
     }
 
-    pub fn forward(&self, x: Tensor<B, 3>, context: Tensor<B, 3>) -> Tensor<B, 3> {
+    pub fn forward(
+        &self,
+        x: Tensor<B, 3>,
+        context: Tensor<B, 3>,
+        mask_pad: Option<Tensor<B, 2, Bool>>,
+    ) -> Tensor<B, 3> {
         let [batch_size, seq_len, channels] = x.dims();
         let context_len = context.dims()[1];
 
@@ -196,7 +201,15 @@ impl<B: Backend> CrossAttention<B> {
 
         // Attention
         let scale = (self.d_head as f64).sqrt();
-        let scores = q.matmul(k.swap_dims(2, 3)) / scale;
+        let mut scores = q.matmul(k.swap_dims(2, 3)) / scale;
+        if let Some(mask_pad) = mask_pad {
+            // The encoder masks padding internally, but its output still has
+            // vectors at those positions. Exclude them as cross-attention keys.
+            scores = scores + mask_pad
+                .unsqueeze_dim::<3>(1)
+                .unsqueeze_dim::<4>(2)
+                .float() * -1e9;
+        }
         let attn = softmax(scores, 3);
 
         let out = attn.matmul(v);
@@ -320,7 +333,12 @@ impl<B: Backend> AttentionBlock<B> {
         }
     }
 
-    pub fn forward(&self, x: Tensor<B, 4>, context: Tensor<B, 3>) -> Tensor<B, 4> {
+    pub fn forward(
+        &self,
+        x: Tensor<B, 4>,
+        context: Tensor<B, 3>,
+        mask_pad: Option<Tensor<B, 2, Bool>>,
+    ) -> Tensor<B, 4> {
         let [batch, channels, height, width] = x.dims();
         let seq_len = height * width;
 
@@ -335,7 +353,7 @@ impl<B: Backend> AttentionBlock<B> {
         let x_seq = x_seq.clone() + attn_out;
 
         // Cross-attention with text context
-        let cross_out = self.cross_attn.forward(self.norm2_seq(x_seq.clone()), context);
+        let cross_out = self.cross_attn.forward(self.norm2_seq(x_seq.clone()), context, mask_pad);
         let x_seq = x_seq.clone() + cross_out;
 
         // FFN
@@ -430,6 +448,7 @@ impl<B: Backend> DownBlock<B> {
         x: Tensor<B, 4>,
         time_emb: Tensor<B, 2>,
         context: Tensor<B, 3>,
+        mask_pad: Option<Tensor<B, 2, Bool>>,
     ) -> (Tensor<B, 4>, Tensor<B, 4>) {
         let mut h = x;
         for resnet in &self.resnets {
@@ -437,7 +456,7 @@ impl<B: Backend> DownBlock<B> {
         }
 
         if let Some(ref attn) = self.attn {
-            h = attn.forward(h, context);
+            h = attn.forward(h, context, mask_pad);
         }
 
         let h_skip = h.clone();
@@ -521,6 +540,7 @@ impl<B: Backend> UpBlock<B> {
         skip: Tensor<B, 4>,
         time_emb: Tensor<B, 2>,
         context: Tensor<B, 3>,
+        mask_pad: Option<Tensor<B, 2, Bool>>,
     ) -> Tensor<B, 4> {
         // Concatenate skip connection
         let mut h = Tensor::cat(vec![x, skip], 1);
@@ -530,7 +550,7 @@ impl<B: Backend> UpBlock<B> {
         }
 
         if let Some(ref attn) = self.attn {
-            h = attn.forward(h, context);
+            h = attn.forward(h, context, mask_pad);
         }
 
         if let Some(ref up) = self.upsample {
@@ -824,30 +844,30 @@ impl<B: Backend> UNet<B> {
         text_mask_pad: Option<Tensor<B, 2, Bool>>,
     ) -> Tensor<B, 4> {
         // Encode text
-        let text_context = self.text_encoder.forward(text_tokens, text_mask_pad); // [batch, seq_len, text_embed_dim]
+        let text_context = self.text_encoder.forward(text_tokens, text_mask_pad.clone()); // [batch, seq_len, text_embed_dim]
 
         // Time embedding
         let time_emb = self.time_embedding.forward(timesteps);
 
         // Initial conv
-        let mut h = self.conv_in.forward(noisy_images);
+        let h = self.conv_in.forward(noisy_images);
 
         // Encoder
-        let (h1, skip1) = self.down1.forward(h, time_emb.clone(), text_context.clone());
-        let (h2, skip2) = self.down2.forward(h1, time_emb.clone(), text_context.clone());
-        let (h3, skip3) = self.down3.forward(h2, time_emb.clone(), text_context.clone());
+        let (h1, skip1) = self.down1.forward(h, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        let (h2, skip2) = self.down2.forward(h1, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        let (h3, skip3) = self.down3.forward(h2, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
 
         // Bottleneck
         let mut h = self.mid_block1.forward(h3, time_emb.clone());
         if let Some(ref attn) = self.mid_attn {
-            h = attn.forward(h, text_context.clone());
+            h = attn.forward(h, text_context.clone(), text_mask_pad.clone());
         }
         h = self.mid_block2.forward(h, time_emb.clone());
 
         // Decoder
-        h = self.up1.forward(h, skip3, time_emb.clone(), text_context.clone());
-        h = self.up2.forward(h, skip2, time_emb.clone(), text_context.clone());
-        h = self.up3.forward(h, skip1, time_emb, text_context);
+        h = self.up1.forward(h, skip3, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        h = self.up2.forward(h, skip2, time_emb.clone(), text_context.clone(), text_mask_pad.clone());
+        h = self.up3.forward(h, skip1, time_emb, text_context, text_mask_pad);
 
         // Output
         h = self.norm_out.forward(h);

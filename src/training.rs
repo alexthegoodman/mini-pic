@@ -1,8 +1,8 @@
-use crate::dataset::{DiffusionBatcher, DiffusionDataset};
+use crate::dataset::{DiffusionBatcher, DiffusionDataset, DiffusionItem};
 use crate::data_paths;
 use crate::model::{UNet, UNetConfig};
 use burn::lr_scheduler::linear::{LinearLrScheduler, LinearLrSchedulerConfig};
-use burn::optim::{AdamW, AdamWConfig, Optimizer};
+use burn::optim::AdamWConfig;
 use burn::train::metric::{CudaMetric, LearningRateMetric};
 use burn::train::RegressionOutput;
 use burn::{
@@ -11,14 +11,10 @@ use burn::{
     record::{CompactRecorder, NoStdTrainingRecorder},
     tensor::backend::AutodiffBackend,
     train::{metric::LossMetric, LearnerBuilder},
-    nn::{
-        conv::{Conv2d, Conv2dConfig},
-        loss::MseLoss,
-        Embedding, EmbeddingConfig, Gelu, GroupNorm, GroupNormConfig, Linear, LinearConfig,
-    },
 };
-use burn::data::dataloader::batcher::Batcher;
-use burn::module::AutodiffModule;
+use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 #[derive(Config)]
 pub struct TrainingConfig {
@@ -42,7 +38,7 @@ pub struct TrainingConfig {
     /// This is the one place that decides which mode a run is in - run()
     /// used to hardcode Some(100) deep inside the function regardless of any
     /// config field, so changing modes meant editing code, not config.
-    // #[config(default = 10_000)]
+    // #[config(default = 0)]
     #[config(default = 1_000)]
     pub total_samples: usize,
 
@@ -70,6 +66,47 @@ impl TrainingConfig {
     pub fn total_samples_limit(&self) -> Option<usize> {
         (self.total_samples != 0).then_some(self.total_samples)
     }
+}
+
+const AUGMENTATION_SUFFIXES: [&str; 12] = [
+    "_flip", "_vflip", "_rot90", "_rot180", "_rot270", "_blur",
+    "_strongblur", "_bright", "_dark", "_gray", "_hcontrast", "_lcontrast",
+];
+
+fn source_image_id(path: &Path) -> String {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    // These suffixes match the names emitted by augment.rs.
+    for suffix in AUGMENTATION_SUFFIXES {
+        if let Some(source) = stem.strip_suffix(suffix) {
+            return source.to_owned();
+        }
+    }
+    stem.to_owned()
+}
+
+fn split_by_source(
+    items: Vec<DiffusionItem>,
+    train_ratio: f32,
+    seed: u64,
+) -> (Vec<DiffusionItem>, Vec<DiffusionItem>) {
+    let mut groups: BTreeMap<String, Vec<DiffusionItem>> = BTreeMap::new();
+    for item in items {
+        groups.entry(source_image_id(&item.image_path)).or_default().push(item);
+    }
+    let mut groups: Vec<_> = groups.into_values().collect();
+    groups.shuffle(&mut StdRng::seed_from_u64(seed));
+    let target = (groups.iter().map(Vec::len).sum::<usize>() as f32 * train_ratio) as usize;
+    let group_count = groups.len();
+    let mut train = Vec::new();
+    let mut valid = Vec::new();
+    for (index, group) in groups.into_iter().enumerate() {
+        if train.len() < target && index + 1 < group_count {
+            train.extend(group);
+        } else {
+            valid.extend(group);
+        }
+    }
+    (train, valid)
 }
 
 // No Default impl here on purpose - it previously duplicated run()'s channel
@@ -155,8 +192,7 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
         data_paths::augmented_dir().to_string_lossy().into_owned(),
         "tokenizer.json".to_string(),
     );
-    // Quick-test size; pass 0 for a full production run over every image found.
-    // .with_total_samples(2000); // do not set here, keep one source of truth for hyperparams in the config defaults
+    // The default uses every image. Set total_samples explicitly for a smoke test.
     B::seed(config.seed);
 
     let artifact_dir = format!("{models_root}/{}", artifact_dir_name(&config));
@@ -196,14 +232,11 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
     .expect("Failed to load dataset");
 
     let total_loaded = full_dataset.len();
-    let train_size = (total_loaded as f32 * train_ratio) as usize;
-    let valid_size = total_loaded - train_size;
-
-    println!("Splitting {} samples: {} train, {} valid", total_loaded, train_size, valid_size);
-
-    // Split the dataset
-    let train_items = full_dataset.items[..train_size].to_vec();
-    let valid_items = full_dataset.items[train_size..].to_vec();
+    let (train_items, valid_items) = split_by_source(full_dataset.items, train_ratio, config.seed);
+    let train_size = train_items.len();
+    let valid_size = valid_items.len();
+    assert!(train_size > 0 && valid_size > 0, "training needs at least two source images");
+    println!("Splitting {} samples by source image: {} train, {} valid", total_loaded, train_size, valid_size);
 
     let train_dataset = DiffusionDataset {
         items: train_items,
@@ -261,14 +294,14 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
 
     // Learning rate scheduler
     // Option 1: Linear warmup + cosine decay (recommended for diffusion)
-    let total_steps = (train_size / config.batch_size) * config.num_epochs;
+    let total_steps = train_size.div_ceil(config.batch_size) * config.num_epochs;
     let lr_scheduler = LinearLrSchedulerConfig::new(
-        0.0001,  // Start from 0
+        config.learning_rate * 0.01,
         config.learning_rate,
         config.warmup_steps,
     )
     .init()
-    .expect("Couldn't ccreate learning rate");
+    .expect("Couldn't create learning rate scheduler");
 
     // Option 2: Cosine annealing (alternative)
     // let lr_scheduler = CosineAnnealingLrSchedulerConfig::new(
@@ -359,3 +392,32 @@ pub fn print_training_tips() {
 // hard-coded 3 down/up levels, so channels[3] was silently ignored even if it
 // had been used) was removed here. Scale run()'s own model_config up instead
 // of reviving a second, independently-drifting config builder.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataset::DiffusionMetadata;
+
+    #[test]
+    fn augmented_variants_stay_in_one_split() {
+        let mut items = Vec::new();
+        for source in ["a", "b", "c", "d", "e"] {
+            for suffix in ["", "_flip", "_lcontrast"] {
+                items.push(DiffusionItem {
+                    image_path: format!("{source}{suffix}.png").into(),
+                    metadata: DiffusionMetadata {
+                        prompt: String::new(), seed: 0, cfg_scale: 0.0,
+                        steps: 0, sampler: String::new(),
+                    },
+                });
+            }
+        }
+        let (train, valid) = split_by_source(items, 0.8, 1337);
+        assert!(!train.is_empty() && !valid.is_empty());
+        for source in ["a", "b", "c", "d", "e"] {
+            let in_train = train.iter().filter(|item| source_image_id(&item.image_path) == source).count();
+            let in_valid = valid.iter().filter(|item| source_image_id(&item.image_path) == source).count();
+            assert!((in_train == 3 && in_valid == 0) || (in_train == 0 && in_valid == 3));
+        }
+    }
+}

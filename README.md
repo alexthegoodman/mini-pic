@@ -27,6 +27,12 @@ defaults use the same augmented output folder.
 
 `cargo run --release --bin mini-pic` to train
 
+The native trainer uses all available augmented images by default (`total_samples = 0`).
+Set `total_samples` in `src/training.rs` only for a smoke test. It keeps every
+augmentation of a source image in the same train or validation split. A low
+noise-prediction MSE alone does not establish prompt-conditioned generation;
+check generated images with several distinct prompts after a run.
+
 `cargo run --release --bin infer -- "<prompt>" <model_dir> [steps] [output_path]` to generate an
 image. `model_dir` is the "Artifact dir: ..." path training printed at the start of that run
 (steps and output_path are both optional - steps defaults to 50, output_path to `output.png`):
