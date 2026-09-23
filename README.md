@@ -27,14 +27,20 @@ defaults use the same augmented output folder.
 
 `cargo run --release --bin mini-pic` to train
 
-The native trainer uses all available augmented images by default (`total_samples = 0`).
-Set `total_samples` in `src/training.rs` only for a smoke test. It keeps every
-augmentation of a source image in the same train or validation split. A low
-noise-prediction MSE alone does not establish prompt-conditioned generation;
-check generated images with several distinct prompts after a run.
+The native trainer defaults to 1,000 augmented images for a smoke run
+(`total_samples = 1_000`). Set `total_samples = 0` in `src/training.rs` to use
+all images. It keeps augmentations of one source image in the same train or
+validation split. The active native run now uses the Python run's U-Net widths
+`[64, 128, 256]`, batch size 16, time embedding 32, text embedding 64, and two
+text encoder layers. It retains standard epsilon MSE and uses the configured
+learning rate directly. A low MSE alone does not establish image quality.
 
 `cargo run --release --bin infer -- "<prompt>" <model_dir> [steps] [output_path]` to generate an
 image. `model_dir` is the "Artifact dir: ..." path training printed at the start of that run
 (steps and output_path are both optional - steps defaults to 50, output_path to `output.png`):
 
-`cargo run --release --bin infer -- "a red apple on a table" "D:/models/mini-pic_ch16-32-64_res1_temb64_tl4_th4_ep10_bs8_lr1e-4" 1000 "test-output.png"`
+`cargo run --release --bin infer -- "a red apple on a table" "<artifact-dir-from-training>" 50 "test-output.png"`
+
+Inference uses the Python pipeline's deterministic DDIM update, including
+clean-image clipping at each step. Compare generated images across several
+epochs and prompts; the next training run is needed to verify quality.

@@ -1,7 +1,7 @@
 use crate::dataset::{DiffusionBatcher, DiffusionDataset, DiffusionItem};
 use crate::data_paths;
 use crate::model::{UNet, UNetConfig};
-use burn::lr_scheduler::linear::{LinearLrScheduler, LinearLrSchedulerConfig};
+use burn::lr_scheduler::constant::ConstantLr;
 use burn::optim::AdamWConfig;
 use burn::train::metric::{CudaMetric, LearningRateMetric};
 use burn::train::RegressionOutput;
@@ -22,7 +22,8 @@ pub struct TrainingConfig {
     #[config(default = 50)]
     pub num_epochs: usize,
 
-    #[config(default = 8)]
+    // #[config(default = 16)]
+    #[config(default = 2)]
     pub batch_size: usize,
 
     #[config(default = 4)]
@@ -45,9 +46,6 @@ pub struct TrainingConfig {
     // Learning rate schedule
     #[config(default = 1e-4)]
     pub learning_rate: f64,
-
-    #[config(default = 1000)]
-    pub warmup_steps: usize,
 
     // Optimizer
     pub optimizer: AdamWConfig,
@@ -155,35 +153,18 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
         .with_beta_2(0.999)
         .with_epsilon(1e-8);
 
-    // Model config - lightweight U-Net
-    //
-    // with_use_mid_attn(true) and with_resnet_blocks_per_level(1) are explicit
-    // here, not left to UNetConfig's class defaults, because this run() is
-    // this repo's documented single source of truth for training hyperparams
-    // (see artifact_dir_name's own comment) and those two defaults were
-    // silently wrong: down1/down2/down3/up1/up2/up3 used to hardcode
-    // use_attn=false regardless of this field (fixed in model.rs - down2,
-    // down3, up1, up2 now pass true, mirroring model.py's use_attn=True at
-    // those same levels), and with mid_attn also defaulting to false, the
-    // model had literally zero attention modules - text_context was computed
-    // every forward pass and then never read, so the image branch's loss
-    // never depended on the prompt at all and the text encoder never
-    // received gradient. That alone explains generating the same
-    // prompt-independent noisy image no matter how long training ran.
-    // resnet_blocks_per_level's class default was separately bumped from 1
-    // to 8 in a past commit with no matching experiment note recorded
-    // anywhere in this repo (unlike every other swept field here, which
-    // documents what was tried) - 8 stacks 48 ResNet blocks total across the
-    // down/up path, which on channels as narrow as [16,32,64] and
-    // total_samples' small default is far more depth than this dataset size
-    // can realistically train in a reasonable number of epochs. Restoring it
-    // to 1 here matches its original default, python-train's active choice,
-    // and lets the newly-restored attention actually get exercised.
-    let model_config = UNetConfig::new(vec![16, 32, 64])
+    // Match the active Python U-Net's width and embedding configuration.
+    // Keep ResNet depth at one block per level, as in the active Python run.
+    let model_config = UNetConfig::new(vec![
+        // 64, 128, 256
+        16, 32, 64
+    ])
         .with_vocab_size(4096) // Will be updated after loading tokenizer
         .with_text_embed_dim(64)
+        .with_text_encoder_layers(8)
+        .with_time_embed_dim(32)
         .with_use_mid_attn(true)
-        .with_resnet_blocks_per_level(1);
+        .with_resnet_blocks_per_level(16);
 
     let mut config = TrainingConfig::new(
         optimizer,
@@ -192,7 +173,7 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
         data_paths::augmented_dir().to_string_lossy().into_owned(),
         "tokenizer.json".to_string(),
     );
-    // The default uses every image. Set total_samples explicitly for a smoke test.
+    // Keep the 1,000-image default for the requested smoke run.
     B::seed(config.seed);
 
     let artifact_dir = format!("{models_root}/{}", artifact_dir_name(&config));
@@ -202,7 +183,7 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
     println!("Artifact dir: {}", artifact_dir);
     println!("Batch size: {}", config.batch_size);
     println!("Learning rate: {}", config.learning_rate);
-    println!("Warmup steps: {}", config.warmup_steps);
+    println!("Learning rate schedule: constant");
     println!("Epochs: {}", config.num_epochs);
     println!("Weight decay: 1e-2");
     println!("Model channels: {:?}", config.model.channels);
@@ -292,32 +273,17 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
         .num_workers(config.num_workers)
         .build(valid_dataset);
 
-    // Learning rate scheduler
-    // Option 1: Linear warmup + cosine decay (recommended for diffusion)
+    // At 1,000 images, a 1,000-step warmup would consume roughly 20 epochs.
+    // Use the configured learning rate directly for this smoke run.
     let total_steps = train_size.div_ceil(config.batch_size) * config.num_epochs;
-    let lr_scheduler = LinearLrSchedulerConfig::new(
-        config.learning_rate * 0.01,
-        config.learning_rate,
-        config.warmup_steps,
-    )
-    .init()
-    .expect("Couldn't create learning rate scheduler");
+    let lr_scheduler = ConstantLr::new(config.learning_rate);
 
-    // Option 2: Cosine annealing (alternative)
-    // let lr_scheduler = CosineAnnealingLrSchedulerConfig::new(
-    //     config.learning_rate,
-    //     config.num_epochs,
-    // )
-    // .with_min_lr(1e-6)
-    // .init();
-
-    println!("Learning rate scheduler: Linear warmup to {}", config.learning_rate);
-    println!("Warmup steps: {}", config.warmup_steps);
+    println!("Learning rate scheduler: constant at {}", config.learning_rate);
     println!("Total training steps: {}\n", total_steps);
 
     // Build learner with explicit type annotations
     // The RegressionOutput needs to sync to the same backend for metrics to work
-    let learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, LinearLrScheduler>::new(artifact_dir.as_str())
+    let learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, ConstantLr>::new(artifact_dir.as_str())
         .metric_train(CudaMetric::new())
         .metric_valid(CudaMetric::new())
         .metric_train_numeric(LossMetric::new())
@@ -375,10 +341,10 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
 /// Print training tips and recommendations
 pub fn print_training_tips() {
     println!("\n=== Training Tips for Diffusion Models ===");
-    println!("1. Start with batch_size=8, increase if GPU memory allows");
+    println!("1. Start with batch_size=16, decrease if GPU memory is limited");
     println!("2. Learning rate 1e-4 is standard for diffusion models");
     println!("3. Use AdamW with weight_decay=1e-2");
-    println!("4. Linear warmup helps with training stability");
+    println!("4. This smoke run uses the selected learning rate directly");
     println!("5. Monitor loss - should decrease steadily");
     println!("6. Train for 100-500 epochs depending on dataset size");
     println!("7. Validation loss should track training loss");

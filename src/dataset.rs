@@ -296,29 +296,43 @@ pub struct DiffusionBatcher<B: Backend> {
     device: B::Device,
     tokenizer: TextTokenizer,
     noise_schedule: NoiseSchedule,
+    // Device-resident lookup tables for the forward diffusion coefficients,
+    // so per-batch noise application never needs to leave the device.
+    sqrt_alpha_bars: Tensor<B, 1>,
+    sqrt_one_minus_alpha_bars: Tensor<B, 1>,
 }
 
 impl<B: Backend> DiffusionBatcher<B> {
     pub fn new(device: B::Device, tokenizer: TextTokenizer) -> Self {
         let noise_schedule = NoiseSchedule::linear(NUM_TIMESTEPS, 0.0001, 0.02);
+
+        let sqrt_alpha_bars =
+            Tensor::<B, 1>::from_floats(noise_schedule.sqrt_alpha_bars.as_slice(), &device);
+        let sqrt_one_minus_alpha_bars = Tensor::<B, 1>::from_floats(
+            noise_schedule.sqrt_one_minus_alpha_bars.as_slice(),
+            &device,
+        );
+
         Self {
             device,
             tokenizer,
             noise_schedule,
+            sqrt_alpha_bars,
+            sqrt_one_minus_alpha_bars,
         }
     }
 
-    fn load_image(&self, path: &Path) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-        let img = image::open(path)?;
+    fn load_image(&self, path: &Path) -> Vec<f32> {
+        let img = image::open(path)
+            .unwrap_or_else(|e| panic!("Failed to open image {:?}: {}", path, e));
         let img = img.to_rgb8();
         let (width, height) = img.dimensions();
 
         if width != IMAGE_SIZE as u32 || height != IMAGE_SIZE as u32 {
-            return Err(format!(
-                "Image dimensions {}x{} don't match expected {}x{}",
-                width, height, IMAGE_SIZE, IMAGE_SIZE
-            )
-            .into());
+            panic!(
+                "Image {:?} has dimensions {}x{}, expected {}x{}",
+                path, width, height, IMAGE_SIZE, IMAGE_SIZE
+            );
         }
 
         // Convert to float and normalize to [-1, 1]
@@ -343,7 +357,7 @@ impl<B: Backend> DiffusionBatcher<B> {
             }
         }
 
-        Ok(chw_data)
+        chw_data
     }
 }
 
@@ -358,14 +372,12 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
         let mut text_mask_vec = Vec::new();
         let mut timesteps_vec = Vec::new();
 
-        // println!("Items length: {:?}", items.len());
-
         for item in items {
-            // Load image
-            let image_data = self.load_image(&item.image_path).unwrap_or_else(|e| {
-                eprintln!("Failed to load image {:?}: {}", item.image_path, e);
-                vec![0.0; IMAGE_CHANNELS * IMAGE_SIZE * IMAGE_SIZE]
-            });
+            // Load image. Panics on failure (missing file, unreadable, wrong
+            // dimensions) rather than silently substituting a zero image —
+            // a bad path or corrupt file here means the dataset is broken
+            // and should be fixed, not fed into training as a blank sample.
+            let image_data = self.load_image(&item.image_path);
             all_images.extend(image_data);
 
             // Tokenize text
@@ -373,8 +385,10 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
                 .tokenizer
                 .encode(&item.metadata.prompt, MAX_SEQ_LEN)
                 .unwrap_or_else(|e| {
-                    eprintln!("Failed to tokenize prompt: {}", e);
-                    (vec![0; MAX_SEQ_LEN], vec![false; MAX_SEQ_LEN])
+                    panic!(
+                        "Failed to tokenize prompt for {:?}: {}",
+                        item.image_path, e
+                    )
                 });
             text_tokens_vec.extend(tokens);
             text_mask_vec.extend(mask.iter().map(|&b| if b { 1.0 } else { 0.0 }));
@@ -401,33 +415,28 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
         let text_mask = Tensor::<B, 1>::from_floats(text_mask_vec.as_slice(), device)
             .reshape([batch_size, MAX_SEQ_LEN]);
 
-        let timesteps =
-            Tensor::<B, 1, Int>::from_ints(timesteps_vec.as_slice(), device).float();
+        let timesteps_int =
+            Tensor::<B, 1, Int>::from_ints(timesteps_vec.as_slice(), device);
+        let timesteps = timesteps_int.clone().float();
 
-        // Generate noise and apply to images
+        // Generate noise
         let noise = Tensor::<B, 4>::random_like(&images, burn::tensor::Distribution::Normal(0.0, 1.0));
 
-        // Apply noise schedule to each item in batch
-        let mut noisy_images_data: Vec<f32> = Vec::new();
-        let images_data: Vec<f32> = images.clone().into_data().convert::<f32>().to_vec().unwrap();
-        let noise_data: Vec<f32> = noise.clone().into_data().convert::<f32>().to_vec().unwrap();
-        let timesteps_data: Vec<i32> = timesteps.clone().into_data().convert::<i32>().to_vec().unwrap();
+        // Gather per-item noise coefficients from the precomputed, device-resident
+        // schedule tensors and apply them via broadcasting — no host round trip.
+        let sqrt_alpha_bar = self
+            .sqrt_alpha_bars
+            .clone()
+            .select(0, timesteps_int.clone())
+            .reshape([batch_size, 1, 1, 1]);
+        let sqrt_one_minus_alpha_bar = self
+            .sqrt_one_minus_alpha_bars
+            .clone()
+            .select(0, timesteps_int)
+            .reshape([batch_size, 1, 1, 1]);
 
-        let img_size = IMAGE_CHANNELS * IMAGE_SIZE * IMAGE_SIZE;
-        for i in 0..batch_size {
-            let t = timesteps_data[i] as usize;
-            let (sqrt_alpha_bar, sqrt_one_minus_alpha_bar) = self.noise_schedule.get_noise_params(t);
-
-            for j in 0..img_size {
-                let idx = i * img_size + j;
-                let noisy_pixel =
-                    sqrt_alpha_bar * images_data[idx] + sqrt_one_minus_alpha_bar * noise_data[idx];
-                noisy_images_data.push(noisy_pixel);
-            }
-        }
-
-        let noisy_images = Tensor::<B, 1>::from_floats(noisy_images_data.as_slice(), device)
-            .reshape([batch_size, IMAGE_CHANNELS, IMAGE_SIZE, IMAGE_SIZE]);
+        let noisy_images =
+            images.clone() * sqrt_alpha_bar + noise.clone() * sqrt_one_minus_alpha_bar;
 
         DiffusionBatch {
             images,

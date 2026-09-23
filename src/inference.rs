@@ -68,8 +68,9 @@ impl<B: Backend> DiffusionInference<B> {
         })
     }
 
-    /// Generate an image from a text prompt using DDPM sampling.
+    /// Generate an image from a text prompt using Python parity DDIM sampling.
     pub fn generate(&self, prompt: &str, num_inference_steps: usize) -> Tensor<B, 4> {
+        assert!((1..=NUM_TIMESTEPS).contains(&num_inference_steps));
         println!("Generating image for prompt: \"{}\"", prompt);
 
         // Tokenize prompt
@@ -102,20 +103,8 @@ impl<B: Backend> DiffusionInference<B> {
             &self.device,
         );
 
-        // DDPM reverse diffusion process. When num_inference_steps < NUM_TIMESTEPS
-        // we only visit a subsequence of timesteps (e.g. 0, 20, 40, ..., 980 for
-        // 50 steps over 1000), so each iteration must denoise across the *gap*
-        // between the current and next timestep in the subsequence, not a single
-        // raw timestep. Using the single-step alpha_t/beta_t here (as if step_size
-        // were always 1) undercorrects by a factor of step_size: on a subsequence
-        // of every 20th timestep it removes about 1/20th of the noise a full
-        // schedule would, so x barely denoises no matter how accurate the model's
-        // predictions are - respacing alpha/beta to the actual gap (Nichol &
-        // Dhariwal's "respaced" schedule: alpha_t' = alpha_bar_t / alpha_bar_prev)
-        // fixes this for any step count, matching the num_inference_steps=NUM_TIMESTEPS
-        // case exactly when step_size == 1.
-        let step_size = (NUM_TIMESTEPS / num_inference_steps).max(1);
-        let timesteps: Vec<usize> = (0..NUM_TIMESTEPS).step_by(step_size).collect();
+        // Python's np.linspace(999, 0, steps, dtype=int), traversed in reverse.
+        let timesteps = ddim_timesteps(num_inference_steps);
 
         for (i, &t) in timesteps.iter().enumerate().rev() {
             let timestep = Tensor::<B, 1>::from_floats([t as f32], &self.device);
@@ -135,31 +124,7 @@ impl<B: Backend> DiffusionInference<B> {
                 1.0
             };
 
-            // Respaced single-jump alpha/beta covering exactly this subsequence
-            // step (falls back to the model's own per-timestep alpha/beta when
-            // step_size == 1, i.e. num_inference_steps == NUM_TIMESTEPS).
-            let alpha_eff = alpha_bar_t / alpha_bar_prev;
-            let beta_eff = 1.0 - alpha_eff;
-
-            // x_{prev} = (1 / sqrt(alpha_eff)) * (x_t - (beta_eff / sqrt(1 - alpha_bar_t)) * noise_pred)
-            let coef1 = 1.0 / alpha_eff.sqrt();
-            let coef2 = beta_eff / (1.0 - alpha_bar_t).sqrt();
-
-            x = (x - predicted_noise * coef2) * coef1;
-            // Diffusion models are trained on x in [-1, 1]; without clamping every
-            // step (not just once at the end), small per-step prediction error
-            // compounds multiplicatively through coef1 (>1 every step) across the
-            // whole trajectory and x explodes to tens of times its starting scale,
-            // saturating to +/-1 per-pixel independently on the final clamp - i.e.
-            // uncorrelated noise, regardless of how accurate the model is.
-            x = x.clamp(-1.0, 1.0);
-
-            // Add noise if not the final step
-            if i > 0 {
-                let noise = Tensor::<B, 4>::random_like(&x, Distribution::Normal(0.0, 1.0));
-                let sigma = beta_eff.sqrt();
-                x = x + noise * sigma;
-            }
+            x = ddim_epsilon_step(x, predicted_noise, alpha_bar_t, alpha_bar_prev);
 
             if t % 100 == 0 {
                 println!("Denoising step {}/{}", NUM_TIMESTEPS - t, NUM_TIMESTEPS);
@@ -215,6 +180,29 @@ impl<B: Backend> DiffusionInference<B> {
     }
 }
 
+fn ddim_timesteps(steps: usize) -> Vec<usize> {
+    if steps == 1 {
+        return vec![NUM_TIMESTEPS - 1];
+    }
+    (0..steps)
+        .map(|i| i * (NUM_TIMESTEPS - 1) / (steps - 1))
+        .collect()
+}
+
+fn ddim_epsilon_step<B: Backend>(
+    x: Tensor<B, 4>,
+    predicted_noise: Tensor<B, 4>,
+    alpha_bar_t: f32,
+    alpha_bar_prev: f32,
+) -> Tensor<B, 4> {
+    // Same deterministic (eta=0) update and x0 clipping as python-train/inference.py.
+    let pred_x0 = ((x - predicted_noise.clone() * ((1.0 - alpha_bar_t).sqrt() as f64))
+        / (alpha_bar_t.sqrt() as f64))
+        .clamp(-1.0, 1.0);
+    pred_x0 * (alpha_bar_prev.sqrt() as f64)
+        + predicted_noise * ((1.0 - alpha_bar_prev).sqrt() as f64)
+}
+
 /// Helper function to interpolate between two prompts for animation
 pub fn interpolate_prompts(prompt1: &str, prompt2: &str, steps: usize) -> Vec<String> {
     // Simple implementation: just return the two prompts
@@ -228,4 +216,41 @@ pub fn interpolate_prompts(prompt1: &str, prompt2: &str, steps: usize) -> Vec<St
         }
     }
     prompts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::wgpu::{Wgpu, WgpuDevice};
+
+    #[test]
+    fn ddim_schedule_covers_training_endpoints() {
+        let steps = ddim_timesteps(50);
+        assert_eq!(steps.len(), 50);
+        assert_eq!(steps[0], 0);
+        assert_eq!(*steps.last().unwrap(), 999);
+        assert!(steps.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn ddim_step_matches_python_epsilon_update() {
+        let device = WgpuDevice::default();
+        let x0 = Tensor::<Wgpu, 1>::from_floats([0.5, -0.25, 0.75, -0.5], &device)
+            .reshape([1, 1, 2, 2]);
+        let noise = Tensor::<Wgpu, 1>::from_floats([1.25, -0.75, 0.3, -1.1], &device)
+            .reshape([1, 1, 2, 2]);
+        let schedule = NoiseSchedule::linear(NUM_TIMESTEPS, 0.0001, 0.02);
+
+        for (t, previous) in [(999, Some(900)), (900, Some(500)), (500, Some(0)), (0, None)] {
+            let alpha_t = schedule.alpha_bars[t];
+            let alpha_prev = previous.map(|p| schedule.alpha_bars[p]).unwrap_or(1.0);
+            let noisy = x0.clone() * (alpha_t.sqrt() as f64)
+                + noise.clone() * ((1.0 - alpha_t).sqrt() as f64);
+            let expected = x0.clone() * (alpha_prev.sqrt() as f64)
+                + noise.clone() * ((1.0 - alpha_prev).sqrt() as f64);
+            let actual = ddim_epsilon_step(noisy, noise.clone(), alpha_t, alpha_prev);
+            let error = (actual - expected).abs().max().into_scalar();
+            assert!(error < 0.0001, "t={t}, error={error}");
+        }
+    }
 }

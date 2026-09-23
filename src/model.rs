@@ -1,20 +1,10 @@
 use crate::dataset::{DiffusionBatch, IMAGE_CHANNELS, MAX_SEQ_LEN};
 use burn::{
-    config::Config,
-    module::Module,
-    nn::{
-        conv::{Conv2d, Conv2dConfig},
-        loss::MseLoss,
-        transformer::{TransformerEncoder, TransformerEncoderConfig, TransformerEncoderInput},
-        Embedding, EmbeddingConfig, Gelu, GroupNorm, GroupNormConfig, Linear, LinearConfig,
-        PositionalEncoding, PositionalEncodingConfig,
-    },
-    tensor::{
-        activation::softmax,
-        backend::{AutodiffBackend, Backend},
-        Bool, Int, Tensor,
-    },
-    train::{
+    config::Config, module::Module, nn::{
+        Embedding, EmbeddingConfig, Gelu, GroupNorm, GroupNormConfig, Linear, LinearConfig, PositionalEncoding, PositionalEncodingConfig, conv::{Conv2d, Conv2dConfig}, loss::{HuberLoss, HuberLossConfig, MseLoss}, transformer::{TransformerEncoder, TransformerEncoderConfig, TransformerEncoderInput},
+    }, tensor::{
+        Bool, Int, Tensor, activation::softmax, backend::{AutodiffBackend, Backend},
+    }, train::{
         RegressionOutput, TrainOutput, TrainStep, ValidStep,
     },
 };
@@ -510,8 +500,7 @@ impl<B: Backend> UpBlock<B> {
         };
 
         let upsample = if upsample {
-            // Refines features after forward()'s manual nearest-neighbor 2x
-            // repeat (which does the actual, exact doubling). This conv must
+            // Refines features after bilinear 2x interpolation. This conv must
             // be spatial-size-preserving: a 4x4 kernel at stride 1 with
             // padding 1 shrinks the output by 1px (input + 2*1 - 4 + 1 =
             // input - 1), which desyncs it from the skip connection it's
@@ -554,16 +543,57 @@ impl<B: Backend> UpBlock<B> {
         }
 
         if let Some(ref up) = self.upsample {
-            // Manual bilinear upsample then conv
-            let [batch, channels, height, width] = h.dims();
-            let h_upsampled = h.clone().reshape([batch, channels, height, 1, width, 1]);
-            let h_upsampled = h_upsampled.repeat(&[1, 1, 1, 2, 1, 2]);
-            let h_upsampled = h_upsampled.reshape([batch, channels, height * 2, width * 2]);
+            // Match Python's F.interpolate(..., mode='bilinear', align_corners=False).
+            let h_upsampled = bilinear_upsample_2x(h);
             up.forward(h_upsampled)
         } else {
             h
         }
     }
+}
+
+/// Twofold bilinear resize with edge replication, matching PyTorch's
+/// `F.interpolate(..., scale_factor=2, mode="bilinear", align_corners=False)`.
+/// Burn's built-in bilinear resize uses corner alignment instead.
+fn bilinear_upsample_2x<B: Backend>(input: Tensor<B, 4>) -> Tensor<B, 4> {
+    let [batch, channels, height, width] = input.dims();
+    let previous_rows = Tensor::cat(
+        vec![
+            input.clone().slice([0..batch, 0..channels, 0..1, 0..width]),
+            input.clone().slice([0..batch, 0..channels, 0..height - 1, 0..width]),
+        ],
+        2,
+    );
+    let next_rows = Tensor::cat(
+        vec![
+            input.clone().slice([0..batch, 0..channels, 1..height, 0..width]),
+            input.clone().slice([0..batch, 0..channels, height - 1..height, 0..width]),
+        ],
+        2,
+    );
+    let even_rows = input.clone() * 0.75 + previous_rows * 0.25;
+    let odd_rows = input * 0.75 + next_rows * 0.25;
+    let rows = Tensor::stack::<5>(vec![even_rows, odd_rows], 3)
+        .reshape([batch, channels, height * 2, width]);
+
+    let previous_columns = Tensor::cat(
+        vec![
+            rows.clone().slice([0..batch, 0..channels, 0..height * 2, 0..1]),
+            rows.clone().slice([0..batch, 0..channels, 0..height * 2, 0..width - 1]),
+        ],
+        3,
+    );
+    let next_columns = Tensor::cat(
+        vec![
+            rows.clone().slice([0..batch, 0..channels, 0..height * 2, 1..width]),
+            rows.clone().slice([0..batch, 0..channels, 0..height * 2, width - 1..width]),
+        ],
+        3,
+    );
+    let even_columns = rows.clone() * 0.75 + previous_columns * 0.25;
+    let odd_columns = rows * 0.75 + next_columns * 0.25;
+    Tensor::stack::<5>(vec![even_columns, odd_columns], 4)
+        .reshape([batch, channels, height * 2, width * 2])
 }
 
 // ============================================================================
@@ -674,6 +704,8 @@ pub struct UNet<B: Backend> {
     norm_out: GroupNorm<B>,
     conv_out: Conv2d<B>,
     activation: Gelu,
+
+    huber_loss: HuberLoss,
 }
 
 #[derive(Config)]
@@ -815,6 +847,8 @@ impl UNetConfig {
             .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
             .init(device);
 
+        let huber_loss = HuberLossConfig::new(1.35).init();
+
         UNet {
             text_encoder,
             time_embedding,
@@ -831,6 +865,7 @@ impl UNetConfig {
             norm_out,
             conv_out,
             activation: Gelu::new(),
+            huber_loss
         }
     }
 }
@@ -894,10 +929,18 @@ impl<B: Backend> UNet<B> {
         // let predicted_noise: Tensor<B, 4> = Tensor::zeros([batch_size, channels, height, width], &device);
 
         // MSE loss between predicted noise and actual noise
-        let loss = MseLoss::new().forward(
+        // let loss = MseLoss::new().forward(
+        //     predicted_noise.clone(),
+        //     batch.noise.clone(),
+        //     // burn::nn::loss::Reduction::Mean,
+        //     burn::nn::loss::Reduction::Sum,
+        // );
+
+        let loss = self.huber_loss.forward(
             predicted_noise.clone(),
             batch.noise.clone(),
             burn::nn::loss::Reduction::Mean,
+            // burn::nn::loss::Reduction::Sum,
         );
 
         // Flatten for RegressionOutput (expects 2D tensors)
@@ -919,5 +962,29 @@ impl<B: AutodiffBackend> TrainStep<DiffusionBatch<B>, RegressionOutput<B>> for U
 impl<B: Backend> ValidStep<DiffusionBatch<B>, RegressionOutput<B>> for UNet<B> {
     fn step(&self, batch: DiffusionBatch<B>) -> RegressionOutput<B> {
         self.forward_step(batch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use burn::backend::wgpu::{Wgpu, WgpuDevice};
+
+    #[test]
+    fn twofold_resize_matches_pytorch_half_pixel_alignment() {
+        let device = WgpuDevice::default();
+        let input = Tensor::<Wgpu, 1>::from_floats([0.0, 1.0, 2.0, 3.0], &device)
+            .reshape([1, 1, 2, 2]);
+        let actual: Vec<f32> = bilinear_upsample_2x(input)
+            .into_data().convert::<f32>().to_vec().unwrap();
+        let expected: [f32; 16] = [
+            0.0, 0.25, 0.75, 1.0,
+            0.5, 0.75, 1.25, 1.5,
+            1.5, 1.75, 2.25, 2.5,
+            2.0, 2.25, 2.75, 3.0,
+        ];
+        for (got, want) in actual.iter().zip(expected) {
+            assert!((*got - want).abs() < 0.00001_f32, "got {got}, expected {want}");
+        }
     }
 }
