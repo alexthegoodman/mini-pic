@@ -18,7 +18,11 @@ def load_model(checkpoint_path: str, device: str = "cuda") -> UNet:
     with open(config_path) as f:
         config = json.load(f)
 
-    # Create model
+    # Create model - every architecture-affecting field must come from the
+    # saved config, not a hand-typed default, or load_state_dict below can
+    # fail (or silently mismatch) against whatever was actually trained.
+    # .get() with the model.py default covers config.json files saved before
+    # text_encoder_layers existed.
     model = UNet(
         vocab_size=config['vocab_size'],
         text_embed_dim=config['text_embed_dim'],
@@ -26,6 +30,7 @@ def load_model(checkpoint_path: str, device: str = "cuda") -> UNet:
         use_mid_attn=config['use_mid_attn'],
         resnet_blocks_per_level=config['resnet_blocks_per_level'],
         channels=config['channels'],
+        text_encoder_layers=config.get('text_encoder_layers', 4),
     ).to(device)
 
     # Load weights

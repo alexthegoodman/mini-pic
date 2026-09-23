@@ -1,9 +1,25 @@
 """Resume training from latest checkpoint"""
+import json
 import torch
 from pathlib import Path
 import re
 
 from train import Trainer, TrainingConfig
+
+
+def load_resumed_config(checkpoint_dir: str, **overrides) -> TrainingConfig:
+    """Rebuilds the config exactly as train.py saved it for this run, so a
+    resume can't silently retrain with different architecture/optimizer
+    hyperparameters than the checkpoint was actually produced with (that drift
+    is what previously made this file's channels/text_embed_dim/learning_rate
+    disagree with train.py's). Only `overrides` - training-duration knobs like
+    num_epochs, not architecture - are allowed to differ from the saved run.
+    """
+    config_path = Path(checkpoint_dir) / "config.json"
+    with open(config_path) as f:
+        saved = json.load(f)
+    saved.update(overrides)
+    return TrainingConfig(**saved)
 
 
 def find_latest_checkpoint(checkpoint_dir: str) -> str:
@@ -30,26 +46,12 @@ def find_latest_checkpoint(checkpoint_dir: str) -> str:
 
 def main():
     """Resume training from latest checkpoint"""
-    # Create config with same parameters as original training
-    config = TrainingConfig(
-        # For quick testing - remove max_samples for full training
-        max_samples=80000,
+    # Reload the exact config the checkpoint was trained with; only
+    # duration/logging knobs are safe to override here.
+    config = load_resumed_config(
+        "./checkpoints",
         num_epochs=50,
-        batch_size=16,
-        learning_rate=1e-4,
-        warmup_steps=500,
-
-        # Sample generation
-        generate_samples=True,
         sample_interval=5,
-        num_samples_per_prompt=4,
-        use_ddim=True,
-        ddim_steps=50,
-
-        # Quality hyperparameters
-        channels=[64, 128, 256],
-        text_embed_dim=32,
-        use_mid_attn=True,
     )
 
     # Create trainer

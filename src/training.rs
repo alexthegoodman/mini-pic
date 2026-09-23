@@ -1,4 +1,4 @@
-use crate::dataset::{DiffusionBatcher, DiffusionDataset, DiffusionBatch};
+use crate::dataset::{DiffusionBatcher, DiffusionDataset};
 use crate::data_paths;
 use crate::model::{UNet, UNetConfig};
 use burn::lr_scheduler::linear::{LinearLrScheduler, LinearLrSchedulerConfig};
@@ -26,8 +26,7 @@ pub struct TrainingConfig {
     #[config(default = 200)]
     pub num_epochs: usize,
 
-    // #[config(default = 8)]
-    #[config(default = 1)]
+    #[config(default = 8)]
     pub batch_size: usize,
 
     #[config(default = 4)]
@@ -35,6 +34,16 @@ pub struct TrainingConfig {
 
     #[config(default = 1337)]
     pub seed: u64,
+
+    /// 0 loads every image found (a real training run); any other value caps
+    /// the dataset for a quick smoke test. (burn's Config derive only
+    /// accepts literal defaults, so this can't be an Option<usize> with a
+    /// None default - see total_samples_limit() for the Option conversion.)
+    /// This is the one place that decides which mode a run is in - run()
+    /// used to hardcode Some(100) deep inside the function regardless of any
+    /// config field, so changing modes meant editing code, not config.
+    #[config(default = 0)]
+    pub total_samples: usize,
 
     // Learning rate schedule
     #[config(default = 1e-4)]
@@ -53,6 +62,13 @@ pub struct TrainingConfig {
     pub json_dir: String,
     pub image_dir: String,
     pub tokenizer_path: String,
+}
+
+impl TrainingConfig {
+    /// total_samples as the Option<usize> DiffusionDataset::new expects: 0 -> None (load everything).
+    pub fn total_samples_limit(&self) -> Option<usize> {
+        (self.total_samples != 0).then_some(self.total_samples)
+    }
 }
 
 impl Default for TrainingConfig {
@@ -99,7 +115,9 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
         data_paths::augmented_dir().to_string_lossy().into_owned(),
         data_paths::augmented_dir().to_string_lossy().into_owned(),
         "tokenizer.json".to_string(),
-    );
+    )
+    // Quick-test size; pass 0 for a full production run over every image found.
+    .with_total_samples(2000);
     B::seed(config.seed);
 
     println!("=== Diffusion Model Training Configuration ===");
@@ -117,9 +135,9 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
     // determine how many JSON files to load
     println!("Determining dataset split...");
 
-    // For testing: use 2000 images total (will load ~2 JSON files)
-    // For full training: use None to load all images
-    let total_samples = Some(100); // Change to None for full dataset
+    // config.total_samples is the single switch between a quick smoke test
+    // and full training - see TrainingConfig::total_samples's doc comment.
+    let total_samples = config.total_samples_limit();
     let train_ratio = 0.8;
 
     // Load the full dataset, then split it
@@ -221,37 +239,6 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
     println!("Warmup steps: {}", config.warmup_steps);
     println!("Total training steps: {}\n", total_steps);
 
-    // TEST: Try to create a test batch for validation
-    println!("Testing batcher with single batch...");
-
-    // Create a separate test dataset (load just 100 samples)
-    let test_dataset = DiffusionDataset::new(
-        &config.json_dir,
-        &config.image_dir,
-        &config.tokenizer_path,
-        Some(100),
-    )
-    .expect("Failed to load test dataset");
-
-    // Create a separate batcher for testing
-    let test_batcher = DiffusionBatcher::<B>::new(
-        device.clone(),
-        test_dataset.tokenizer.clone(),
-    );
-
-    let test_items: Vec<_> = (0..config.batch_size)
-        .filter_map(|i| test_dataset.get(i))
-        .collect();
-    println!("Got {} test items", test_items.len());
-
-    println!("Creating batch...");
-    let test_batch: DiffusionBatch<B> = test_batcher.batch(test_items, &device);
-    println!("Batch created successfully!");
-    println!("Batch shapes - images: {:?}, noisy: {:?}",
-             test_batch.images.dims(),
-             test_batch.noisy_images.dims());
-
-
     // Build learner with explicit type annotations
     // The RegressionOutput needs to sync to the same backend for metrics to work
     let learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, LinearLrScheduler>::new(artifact_dir)
@@ -264,13 +251,22 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
         .devices(vec![device.clone()])
         .num_epochs(config.num_epochs)
         .summary();
-        // .build(model, config.optimizer.init(), lr_scheduler);
 
     println!("Starting Build...\n");
 
     let learner = learner.build(model, config.optimizer.init(), lr_scheduler);
 
-    // TODO: never reaches here. just appears to fail silently and exits
+    // OPEN BUG (unverified, needs a session with an actual CUDA device to
+    // diagnose): this point was previously never reached - the process
+    // exited with no panic message and no error. The two most likely
+    // explanations, neither confirmed here: (1) the redundant dataset/batcher
+    // self-test that used to sit just above this block (now removed - it
+    // always reloaded 100 images regardless of config, ignoring
+    // total_samples entirely) was stalling or erroring before training ever
+    // started; (2) CudaDevice::default() aborting at the driver level on a
+    // machine with no CUDA-capable GPU/driver can exit the process without a
+    // Rust panic. Run with RUST_BACKTRACE=full and check the exit code if
+    // this still reproduces.
     println!("Starting training...\n");
     
     println!("\nNow trying fit()...");

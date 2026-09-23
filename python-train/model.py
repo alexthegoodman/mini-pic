@@ -535,13 +535,17 @@ class UNet(nn.Module):
             batch['text_tokens'],
         )
 
-        # Select loss function
+        # Select loss function. All four reduce with 'mean' (PyTorch's default)
+        # so loss is comparable across loss_fn choices and across runs, and so
+        # the standard ~1e-4 diffusion learning rate applies regardless of
+        # which one is active - a 'sum' reduction here previously inflated the
+        # loss by num_pixels * batch_size, which had been compensated for with
+        # a learning_rate of 1e-6 in train.py, two orders of magnitude below
+        # every other declared default.
         if self.loss_fn == "mse":
-            loss = F.mse_loss(predicted_noise, batch['noise'], reduction='sum') # testing sum to see if helps reveal actual loss (mean is too small)
-            # loss = F.mse_loss(predicted_noise, batch['noise'])
+            loss = F.mse_loss(predicted_noise, batch['noise'])
         elif self.loss_fn == "l1":
-            # loss = F.l1_loss(predicted_noise, batch['noise'])
-            loss = F.l1_loss(predicted_noise, batch['noise'], reduction='sum')
+            loss = F.l1_loss(predicted_noise, batch['noise'])
         elif self.loss_fn == "smooth_l1":
             loss = F.smooth_l1_loss(predicted_noise, batch['noise'])
         elif self.loss_fn == "huber":

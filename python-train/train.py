@@ -225,28 +225,6 @@ class Trainer:
             betas=config.betas,
         )
 
-        # # Create learning rate scheduler with warmup
-        # warmup_scheduler = LinearLR(
-        #     self.optimizer,
-        #     start_factor=1e-6 / config.learning_rate,
-        #     end_factor=1.0,
-        #     total_iters=config.warmup_steps,
-        # )
-
-        # # Constant LR after warmup (could add cosine decay here)
-        # from torch.optim.lr_scheduler import ConstantLR
-        # constant_scheduler = ConstantLR(
-        #     self.optimizer,
-        #     factor=1.0,
-        #     total_iters=len(self.train_loader) * config.num_epochs - config.warmup_steps,
-        # )
-
-        # self.scheduler = SequentialLR(
-        #     self.optimizer,
-        #     schedulers=[warmup_scheduler, constant_scheduler],
-        #     milestones=[config.warmup_steps],
-        # )
-
         # Create learning rate scheduler with warmup
         warmup_scheduler = LinearLR(
             self.optimizer,
@@ -449,22 +427,24 @@ class Trainer:
 
 
 def main():
-    """Main training function"""
-    config = TrainingConfig(
-        # For quick testing - remove max_samples for full training
-        # max_samples=40000,
-        # max_samples=80000,
-        max_samples=320000,
-        num_epochs=50,
-        # batch_size=4, # just curious
-        batch_size=16, # good sweet spot for quality and speed
-        # batch_size=32,
-        # batch_size=64, # supposed to be faster training, but really each batch becomes slower
-        learning_rate=1e-6,
-        warmup_steps=500, # warms up to lr after 500 batches, then decays back down over the whole training regimen
+    """Main training function.
 
-        # Loss function
-        loss_fn="mse",  # Options: "mse", "l1", "smooth_l1", "huber"
+    This is the single source of truth for the active hyperparameters - it's
+    the config actually passed to Trainer, and Trainer immediately writes it
+    to checkpoints/config.json, which resume_train.py and generate.py then
+    load from rather than retyping their own copies (see those files). Only
+    values that are the CURRENT choice belong active below; prior values that
+    were tried and rejected go in the comment next to the winner, not as a
+    second commented-out line that could be un-commented back into drift.
+    """
+    config = TrainingConfig(
+        max_samples=320000,  # None loads the full ~1.4M for production runs
+        num_epochs=50,
+        batch_size=16,  # good sweet spot for quality and speed; 32/64 tried, slower per-batch with no quality gain
+        learning_rate=1e-4,  # standard diffusion LR; matches the class default and resume_train.py
+        warmup_steps=500,  # warms up to lr over 500 batches, then decays back down over the rest of training
+
+        loss_fn="mse",  # Options: "mse", "l1", "smooth_l1", "huber" - all mean-reduced, so this switch alone doesn't need a different LR
 
         # Sample generation
         generate_samples=True,
@@ -473,22 +453,14 @@ def main():
         use_ddim=True,
         ddim_steps=50,
 
-        # Quality hyperparameters
-        # channels=[8, 16, 32], # per pixel, but small image?
-        # channels=[32, 64, 128], # actually great
-        channels=[64, 128, 256], # maybe slightly better?
-        # channels=[128, 256, 512], # does not seem to help
+        # Quality hyperparameters - current best from manual sweeps; [8,16,32] and
+        # [128,256,512] were both tried and rejected (too small / no gain over this)
+        channels=[64, 128, 256],
         use_mid_attn=True,
-        # text_embed_dim=128,  # INCREASED: Much stronger text conditioning
-        # text_encoder_layers=4,  # NEW: Transformer layers for better semantics
-        text_embed_dim=64,  # INCREASED: Much stronger text conditioning
-        text_encoder_layers=2,  # NEW: Transformer layers for better semantics
-        time_embed_dim=32,
+        text_embed_dim=64,  # stronger text conditioning than the 32 default
+        text_encoder_layers=2,  # deeper (4) wasn't tried at this text_embed_dim; shallower reads fine so far
+        time_embed_dim=32,  # 64 was tried alongside resnet_blocks_per_level=2 - no quality gain, reverted
         resnet_blocks_per_level=1,
-        # does not help with generative quality, currently
-        # text_embed_dim=64, 
-        # time_embed_dim=64,
-        # resnet_blocks_per_level=2,
     )
 
     trainer = Trainer(config)

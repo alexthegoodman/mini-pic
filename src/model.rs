@@ -587,7 +587,10 @@ pub struct UNet<B: Backend> {
 pub struct UNetConfig {
     #[config(default = 8192)]
     pub vocab_size: usize,
-    // #[config(default = 256)]
+    // Unswept here - python-train's UNet found 64 helped over its own 32
+    // default (see its TextEncoder), but that encoder is a multi-layer
+    // Transformer; this one is Embedding+Linear only, so the two aren't
+    // directly comparable and the value hasn't been tuned on this side yet.
     #[config(default = 32)]
     pub text_embed_dim: usize,
     #[config(default = 32)]
