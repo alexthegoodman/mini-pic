@@ -375,8 +375,7 @@ impl<B: Backend> AttentionBlock<B> {
 
 #[derive(Module, Debug)]
 pub struct DownBlock<B: Backend> {
-    resnet1: ResNetBlock<B>,
-    resnet2: Option<ResNetBlock<B>>,
+    resnets: Vec<ResNetBlock<B>>,
     attn: Option<AttentionBlock<B>>,
     downsample: Option<Conv2d<B>>,
 }
@@ -392,12 +391,12 @@ impl<B: Backend> DownBlock<B> {
         num_resnet_blocks: usize,
         device: &B::Device,
     ) -> Self {
-        let resnet1 = ResNetBlock::new(in_channels, out_channels, time_emb_dim, device);
-        let resnet2 = if num_resnet_blocks > 1 {
-            Some(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device))
-        } else {
-            None
-        };
+        assert!(num_resnet_blocks >= 1, "num_resnet_blocks must be at least 1");
+        let mut resnets = Vec::with_capacity(num_resnet_blocks);
+        resnets.push(ResNetBlock::new(in_channels, out_channels, time_emb_dim, device));
+        for _ in 1..num_resnet_blocks {
+            resnets.push(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device));
+        }
 
         let attn = if use_attn {
             Some(AttentionBlock::new(out_channels, context_dim, 4, device))
@@ -417,8 +416,7 @@ impl<B: Backend> DownBlock<B> {
         };
 
         Self {
-            resnet1,
-            resnet2,
+            resnets,
             attn,
             downsample,
         }
@@ -430,10 +428,9 @@ impl<B: Backend> DownBlock<B> {
         time_emb: Tensor<B, 2>,
         context: Tensor<B, 3>,
     ) -> (Tensor<B, 4>, Tensor<B, 4>) {
-        let mut h = self.resnet1.forward(x, time_emb.clone());
-
-        if let Some(ref resnet2) = self.resnet2 {
-            h = resnet2.forward(h, time_emb);
+        let mut h = x;
+        for resnet in &self.resnets {
+            h = resnet.forward(h, time_emb.clone());
         }
 
         if let Some(ref attn) = self.attn {
@@ -454,9 +451,7 @@ impl<B: Backend> DownBlock<B> {
 
 #[derive(Module, Debug)]
 pub struct UpBlock<B: Backend> {
-    resnet1: ResNetBlock<B>,
-    resnet2: Option<ResNetBlock<B>>,
-    resnet3: Option<ResNetBlock<B>>,
+    resnets: Vec<ResNetBlock<B>>,
     attn: Option<AttentionBlock<B>>,
     upsample: Option<Conv2d<B>>,
 }
@@ -472,17 +467,13 @@ impl<B: Backend> UpBlock<B> {
         num_resnet_blocks: usize,
         device: &B::Device,
     ) -> Self {
-        let resnet1 = ResNetBlock::new(in_channels + out_channels, out_channels, time_emb_dim, device);
-        let resnet2 = if num_resnet_blocks > 1 {
-            Some(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device))
-        } else {
-            None
-        };
-        let resnet3 = if num_resnet_blocks > 2 {
-            Some(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device))
-        } else {
-            None
-        };
+        assert!(num_resnet_blocks >= 1, "num_resnet_blocks must be at least 1");
+        // Only the first block absorbs the concatenated skip connection.
+        let mut resnets = Vec::with_capacity(num_resnet_blocks);
+        resnets.push(ResNetBlock::new(in_channels + out_channels, out_channels, time_emb_dim, device));
+        for _ in 1..num_resnet_blocks {
+            resnets.push(ResNetBlock::new(out_channels, out_channels, time_emb_dim, device));
+        }
 
         let attn = if use_attn {
             Some(AttentionBlock::new(out_channels, context_dim, 4, device))
@@ -503,9 +494,7 @@ impl<B: Backend> UpBlock<B> {
         };
 
         Self {
-            resnet1,
-            resnet2,
-            resnet3,
+            resnets,
             attn,
             upsample,
         }
@@ -519,16 +508,10 @@ impl<B: Backend> UpBlock<B> {
         context: Tensor<B, 3>,
     ) -> Tensor<B, 4> {
         // Concatenate skip connection
-        let h = Tensor::cat(vec![x, skip], 1);
+        let mut h = Tensor::cat(vec![x, skip], 1);
 
-        let mut h = self.resnet1.forward(h, time_emb.clone());
-
-        if let Some(ref resnet2) = self.resnet2 {
-            h = resnet2.forward(h, time_emb.clone());
-        }
-
-        if let Some(ref resnet3) = self.resnet3 {
-            h = resnet3.forward(h, time_emb);
+        for resnet in &self.resnets {
+            h = resnet.forward(h, time_emb.clone());
         }
 
         if let Some(ref attn) = self.attn {
@@ -666,7 +649,8 @@ pub struct UNetConfig {
     // 32 default. Both sides now use a real multi-layer Transformer encoder,
     // so that result should transfer better than it used to when this was
     // Embedding+Linear only - worth trying once training here is up and running.
-    #[config(default = 32)]
+    // #[config(default = 32)]
+    #[config(default = 128)]
     pub text_embed_dim: usize,
     // Transformer depth/width for the text encoder. python-train's current
     // active config (see its train.py) uses 2 layers at text_embed_dim=64;
@@ -677,12 +661,13 @@ pub struct UNetConfig {
     pub text_encoder_heads: usize,
     #[config(default = 0.1)]
     pub text_encoder_dropout: f64,
-    #[config(default = 32)]
+    // #[config(default = 32)]
+    #[config(default = 64)]
     pub time_embed_dim: usize,
     #[config(default = false)]
     pub use_mid_attn: bool,
-    #[config(default = 1)]
-    pub resnet_blocks_per_level: usize,  // 1 or 2 ResNet blocks per down/up level
+    #[config(default = 8)]
+    pub resnet_blocks_per_level: usize,  // ResNet blocks stacked per down/up level (>= 1, uncapped)
     pub channels: Vec<usize>,
 }
 
