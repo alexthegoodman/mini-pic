@@ -23,3 +23,7 @@ To use a different folder on D:, set `$env:MINI_PIC_DATA_ROOT = 'D:\your-folder'
 before running the commands. That folder must contain an `images` directory
 with extracted PNG and `part-*.json` files. The Rust and Python training
 defaults use the same augmented output folder.
+
+
+`cargo run --release --bin mini-pic` to train
+`cargo run --release --bin infer -- "a red apple on a table" "D:/models/mini-pic_ch16-32-64_res8_temb64_tl4_th4_ep10_bs8_lr1e-4" "test-output.png"`

@@ -30,3 +30,7 @@ path = "src/bin/train_tokenizer.rs"
 [[bin]]
 name = "augment"
 path = "src/bin/augment.rs"
+
+[[bin]]
+name = "infer"
+path = "src/bin/infer.rs"

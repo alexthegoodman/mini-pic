@@ -23,7 +23,7 @@ use burn::module::AutodiffModule;
 #[derive(Config)]
 pub struct TrainingConfig {
     // Training hyperparameters
-    #[config(default = 200)]
+    #[config(default = 50)]
     pub num_epochs: usize,
 
     #[config(default = 8)]
@@ -42,7 +42,8 @@ pub struct TrainingConfig {
     /// This is the one place that decides which mode a run is in - run()
     /// used to hardcode Some(100) deep inside the function regardless of any
     /// config field, so changing modes meant editing code, not config.
-    #[config(default = 10_000)]
+    // #[config(default = 10_000)]
+    #[config(default = 5_000)]
     pub total_samples: usize,
 
     // Learning rate schedule
@@ -83,9 +84,33 @@ fn create_artifact_dir(artifact_dir: &str) {
     std::fs::create_dir_all(artifact_dir).ok();
 }
 
-pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
-    create_artifact_dir(artifact_dir);
+/// Encodes the hyperparameters that actually change the model/run shape into
+/// a directory name, so different sweeps land in different folders under
+/// models_root instead of silently overwriting each other's checkpoint.
+fn artifact_dir_name(config: &TrainingConfig) -> String {
+    let channels = config
+        .model
+        .channels
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join("-");
 
+    format!(
+        "mini-pic_ch{channels}_res{res}_temb{temb}_tl{tl}_th{th}_ep{ep}_bs{bs}_lr{lr:.0e}_size{count}",
+        channels = channels,
+        res = config.model.resnet_blocks_per_level,
+        temb = config.model.text_embed_dim,
+        tl = config.model.text_encoder_layers,
+        th = config.model.text_encoder_heads,
+        ep = config.num_epochs,
+        bs = config.batch_size,
+        lr = config.learning_rate,
+        count = config.total_samples,
+    )
+}
+
+pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
     // Config - using recommended diffusion hyperparameters
     let optimizer = AdamWConfig::new()
         .with_weight_decay(1e-2)
@@ -109,7 +134,11 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
     // .with_total_samples(2000); // do not set here, keep one source of truth for hyperparams in the config defaults
     B::seed(config.seed);
 
+    let artifact_dir = format!("{models_root}/{}", artifact_dir_name(&config));
+    create_artifact_dir(&artifact_dir);
+
     println!("=== Diffusion Model Training Configuration ===");
+    println!("Artifact dir: {}", artifact_dir);
     println!("Batch size: {}", config.batch_size);
     println!("Learning rate: {}", config.learning_rate);
     println!("Warmup steps: {}", config.warmup_steps);
@@ -230,7 +259,7 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
 
     // Build learner with explicit type annotations
     // The RegressionOutput needs to sync to the same backend for metrics to work
-    let learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, LinearLrScheduler>::new(artifact_dir)
+    let learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, LinearLrScheduler>::new(artifact_dir.as_str())
         .metric_train(CudaMetric::new())
         .metric_valid(CudaMetric::new())
         .metric_train_numeric(LossMetric::new())
