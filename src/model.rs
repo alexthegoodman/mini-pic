@@ -660,7 +660,7 @@ pub struct UNet<B: Backend> {
 
 #[derive(Config)]
 pub struct UNetConfig {
-    #[config(default = 8192)]
+    #[config(default = 4096)]
     pub vocab_size: usize,
     // Unswept here - python-train's TextEncoder found 64 helped over its own
     // 32 default. Both sides now use a real multi-layer Transformer encoder,

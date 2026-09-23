@@ -95,7 +95,7 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
 
     // Model config - lightweight U-Net
     let model_config = UNetConfig::new(vec![16, 32, 64])
-        .with_vocab_size(8192) // Will be updated after loading tokenizer
+        .with_vocab_size(4096) // Will be updated after loading tokenizer
         .with_text_embed_dim(32);
 
     let mut config = TrainingConfig::new(

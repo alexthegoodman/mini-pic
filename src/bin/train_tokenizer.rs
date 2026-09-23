@@ -10,7 +10,7 @@ use tokenizers::models::wordpiece::{WordPiece, WordPieceTrainerBuilder};
 use tokenizers::{AddedToken, Error, TokenizerBuilder};
 
 const OUTPUT_PATH: &str = "tokenizer.json";
-const VOCAB_SIZE: usize = 8000; // WordPiece vocab size
+const VOCAB_SIZE: usize = 4096; // WordPiece vocab size
 
 fn main() -> Result<(), Error> {
     println!("Training WordPiece tokenizer on DiffusionDB prompts...");
