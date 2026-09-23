@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader, Subset
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LinearLR, SequentialLR
 import json
+import os
 import time
 from pathlib import Path
 from tqdm import tqdm
@@ -86,8 +87,8 @@ class DiffusionGANConfig:
     def __init__(
         self,
         # Paths
-        json_dir: str = "../../diffusiondb/unzipped-json-augmented/",
-        image_dir: str = "../../diffusiondb/unzipped-64-augmented/",
+        json_dir: str = str(Path(os.environ.get("MINI_PIC_DATA_ROOT", "D:/DiffusionDB")) / "images-64-augmented"),
+        image_dir: str = str(Path(os.environ.get("MINI_PIC_DATA_ROOT", "D:/DiffusionDB")) / "images-64-augmented"),
         tokenizer_path: str = "../tokenizer.json",
         checkpoint_dir: str = "./checkpoints_gan",
 

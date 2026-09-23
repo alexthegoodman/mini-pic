@@ -1,21 +1,23 @@
 use image::{imageops::FilterType, GenericImageView, ImageFormat};
+use mini_pic::data_paths;
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const INPUT_DIR: &str = "../diffusiondb/unzipped/";
-const OUTPUT_DIR: &str = "../diffusiondb/unzipped-64/";
 const TARGET_SIZE: u32 = 64;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting image preprocessing...");
+    let input_dir = data_paths::source_dir();
+    let output_dir = data_paths::resized_dir();
+    println!("Input: {}", input_dir.display());
+    println!("Output: {}", output_dir.display());
 
     // Create output directory if it doesn't exist
-    fs::create_dir_all(OUTPUT_DIR)?;
+    fs::create_dir_all(&output_dir)?;
 
     // Collect all image files from input directory
-    let input_path = Path::new(INPUT_DIR);
-    let image_files: Vec<PathBuf> = fs::read_dir(input_path)?
+    let image_files: Vec<PathBuf> = fs::read_dir(&input_dir)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| {
@@ -27,6 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     println!("Found {} images to process", image_files.len());
+    if image_files.is_empty() {
+        return Err(format!("No images found in {}", input_dir.display()).into());
+    }
 
     // Process images in parallel
     let results: Vec<_> = image_files
@@ -36,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if idx % 100 == 0 {
                 println!("Processing image {}/{}", idx, image_files.len());
             }
-            process_image(path)
+            process_image(path, &output_dir)
         })
         .collect();
 
@@ -55,12 +60,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  {}. {}", i + 1, e);
             }
         }
+        return Err(format!("{} images failed to preprocess", failures.len()).into());
     }
 
     Ok(())
 }
 
-fn process_image(input_path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn process_image(input_path: &Path, output_dir: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load the image
     let img = image::open(input_path)?;
 
@@ -82,7 +88,7 @@ fn process_image(input_path: &Path) -> Result<(), Box<dyn std::error::Error + Se
     let filename = input_path
         .file_name()
         .ok_or("Invalid filename")?;
-    let output_path = Path::new(OUTPUT_DIR).join(filename);
+    let output_path = output_dir.join(filename);
 
     // Save as PNG
     resized.save_with_format(&output_path, ImageFormat::Png)?;

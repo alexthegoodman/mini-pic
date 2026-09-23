@@ -1,4 +1,5 @@
 use crate::dataset::{DiffusionBatcher, DiffusionDataset, DiffusionBatch};
+use crate::data_paths;
 use crate::model::{UNet, UNetConfig};
 use burn::lr_scheduler::linear::{LinearLrScheduler, LinearLrSchedulerConfig};
 use burn::optim::{AdamW, AdamWConfig, Optimizer};
@@ -64,8 +65,8 @@ impl Default for TrainingConfig {
                 .with_epsilon(1e-8),
             // UNetConfig::new(vec![64, 128, 256]),
             UNetConfig::new(vec![16, 32, 64]),
-            "../diffusiondb/unzipped-json/".to_string(),
-            "../diffusiondb/unzipped-64/".to_string(),
+            data_paths::augmented_dir().to_string_lossy().into_owned(),
+            data_paths::augmented_dir().to_string_lossy().into_owned(),
             "tokenizer.json".to_string(),
         )
     }
@@ -95,8 +96,8 @@ pub fn run<B: AutodiffBackend>(artifact_dir: &str, device: B::Device) {
     let config = TrainingConfig::new(
         optimizer,
         model_config,
-        "../diffusiondb/unzipped-json/".to_string(),
-        "../diffusiondb/unzipped-64/".to_string(),
+        data_paths::augmented_dir().to_string_lossy().into_owned(),
+        data_paths::augmented_dir().to_string_lossy().into_owned(),
         "tokenizer.json".to_string(),
     );
     B::seed(config.seed);
@@ -328,8 +329,8 @@ pub fn create_large_model_config() -> TrainingConfig {
     TrainingConfig::new(
         optimizer,
         model_config,
-        "../diffusiondb/unzipped-json/".to_string(),
-        "../diffusiondb/unzipped-64/".to_string(),
+        data_paths::augmented_dir().to_string_lossy().into_owned(),
+        data_paths::augmented_dir().to_string_lossy().into_owned(),
         "tokenizer.json".to_string(),
     )
     .with_batch_size(4) // Smaller batch for larger model
