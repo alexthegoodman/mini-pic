@@ -37,9 +37,17 @@ training; `balanced` is the default.
 
 To resume an interrupted native run, use the same preset and settings (the run
 folder name is derived from them) and set `$env:MINI_PIC_RESUME = 'latest'` (or
-an epoch number). Model, optimizer and scheduler state are restored from
-`checkpoint/`. Without it, a run deletes any existing folder of the same name,
-checkpoints included. `config.json` is now written before training starts.
+an epoch number). Model and optimizer state are restored from `checkpoint/`.
+Without it, a run deletes any existing folder of the same name, checkpoints
+included. `config.json` is written before training starts.
+
+Native training is a hand-written loop (not `LearnerBuilder`). Every
+`sample_every_batches` batches (default 500, counted across epochs, 0 disables)
+it saves `<run dir>/model.bin` and runs
+`cargo run --release --bin infer -- <run dir> <sample_steps> <run dir>/samples/step-NNNNNN.png`
+(`sample_steps` default 20), blocking training while it runs. Per-batch and
+per-epoch losses go to `<run dir>/losses.csv`; checkpoints are written after
+each epoch, keeping the last two.
 
 | Preset | Channel widths | ResNet blocks per down/up level |
 | --- | --- | ---: |

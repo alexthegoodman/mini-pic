@@ -1,20 +1,18 @@
 use crate::dataset::{DiffusionBatcher, DiffusionDataset, DiffusionItem};
 use crate::data_paths;
 use crate::model::{UNet, UNetConfig};
-use burn::lr_scheduler::constant::ConstantLr;
-use burn::optim::AdamWConfig;
-use burn::train::metric::{CudaMetric, LearningRateMetric};
-use burn::train::RegressionOutput;
+use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::{
     data::{dataloader::DataLoaderBuilder, dataset::Dataset},
+    module::AutodiffModule,
     prelude::*,
-    record::{CompactRecorder, NoStdTrainingRecorder},
+    record::{CompactRecorder, NoStdTrainingRecorder, Recorder},
     tensor::backend::AutodiffBackend,
-    train::{metric::LossMetric, LearnerBuilder},
 };
 use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[derive(Config)]
 pub struct TrainingConfig {
@@ -50,6 +48,16 @@ pub struct TrainingConfig {
     // #[config(default = 1e-5)] // seems quite slow at the start
     // #[config(default = 1e-3)]
     pub learning_rate: f64,
+
+    /// Every this many training batches (counted across epochs) the current
+    /// model is saved to `<run dir>/model` and the `infer` binary is run on
+    /// it, writing `<run dir>/samples/step-NNNNNN.png`. 0 disables.
+    #[config(default = 500)]
+    pub sample_every_batches: usize,
+
+    /// Sampler steps passed to `infer` for those preview images.
+    #[config(default = 20)]
+    pub sample_steps: usize,
 
     // Optimizer
     pub optimizer: AdamWConfig,
@@ -186,16 +194,14 @@ fn split_by_source(
 fn resume_epoch(artifact_dir: &str) -> Option<usize> {
     let want = std::env::var("MINI_PIC_RESUME").ok()?;
     let checkpoint_dir = std::path::Path::new(artifact_dir).join("checkpoint");
-    // Epochs that have all three files (model, optim, scheduler).
+    // Epochs that have both files (model, optim). Runs made by the old
+    // LearnerBuilder also wrote a scheduler-N.mpk, which is constant and unused.
     let mut complete: Vec<usize> = std::fs::read_dir(&checkpoint_dir)
         .unwrap_or_else(|e| panic!("MINI_PIC_RESUME set but {} is unreadable: {e}", checkpoint_dir.display()))
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().into_string().ok()?;
             let epoch: usize = name.strip_prefix("model-")?.strip_suffix(".mpk")?.parse().ok()?;
-            ["optim", "scheduler"]
-                .iter()
-                .all(|kind| checkpoint_dir.join(format!("{kind}-{epoch}.mpk")).exists())
-                .then_some(epoch)
+            checkpoint_dir.join(format!("optim-{epoch}.mpk")).exists().then_some(epoch)
         })
         .collect();
     complete.sort_unstable();
@@ -208,6 +214,60 @@ fn resume_epoch(artifact_dir: &str) -> Option<usize> {
         epoch
     };
     Some(epoch)
+}
+
+/// Saves the model as `<run dir>/model.bin` (the file `infer` loads) and runs
+/// `cargo run --release --bin infer -- <run dir> <steps> <png>`, blocking until
+/// it finishes so it never competes with training for the GPU. A failure is
+/// reported and training carries on.
+fn generate_samples<B: Backend>(model: &UNet<B>, artifact_dir: &str, step: usize, sample_steps: usize) {
+    if let Err(e) = model
+        .clone()
+        .save_file(format!("{artifact_dir}/model"), &NoStdTrainingRecorder::new())
+    {
+        eprintln!("[step {step}] could not save model for sampling: {e}");
+        return;
+    }
+
+    let samples_dir = Path::new(artifact_dir).join("samples");
+    std::fs::create_dir_all(&samples_dir).ok();
+    let out_path = samples_dir.join(format!("step-{step:06}.png"));
+
+    println!("[step {step}] sampling -> {}", out_path.display());
+    // Runs in the current working directory, where infer finds tokenizer.json.
+    let status = std::process::Command::new("cargo")
+        .args(["run", "--release", "--bin", "infer", "--"])
+        .arg(artifact_dir)
+        .arg(sample_steps.to_string())
+        .arg(&out_path)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("[step {step}] infer exited with {s}; continuing training"),
+        Err(e) => eprintln!("[step {step}] could not launch infer: {e}; continuing training"),
+    }
+}
+
+/// Writes `model-N.mpk` and `optim-N.mpk` (the same names and format the old
+/// LearnerBuilder used) and deletes the pair from two epochs earlier.
+fn save_checkpoint<B, O>(checkpoint_dir: &Path, epoch: usize, model: &UNet<B>, optim: &O)
+where
+    B: AutodiffBackend,
+    O: Optimizer<UNet<B>, B>,
+{
+    std::fs::create_dir_all(checkpoint_dir).ok();
+    let recorder = CompactRecorder::new();
+    recorder
+        .record(model.clone().into_record(), checkpoint_dir.join(format!("model-{epoch}")))
+        .expect("Failed to save model checkpoint");
+    recorder
+        .record(optim.to_record(), checkpoint_dir.join(format!("optim-{epoch}")))
+        .expect("Failed to save optimizer checkpoint");
+    if let Some(old) = epoch.checked_sub(2) {
+        for kind in ["model", "optim", "scheduler"] {
+            std::fs::remove_file(checkpoint_dir.join(format!("{kind}-{old}.mpk"))).ok();
+        }
+    }
 }
 
 fn create_artifact_dir(artifact_dir: &str) {
@@ -375,61 +435,103 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
 
     // At 1,000 images, a 1,000-step warmup would consume roughly 20 epochs.
     // Use the configured learning rate directly for this smoke run.
-    let total_steps = train_size.div_ceil(config.batch_size) * config.num_epochs;
-    let lr_scheduler = ConstantLr::new(config.learning_rate);
+    let batches_per_epoch = train_size.div_ceil(config.batch_size);
+    let total_steps = batches_per_epoch * config.num_epochs;
+    let lr = config.learning_rate;
 
-    println!("Learning rate scheduler: constant at {}", config.learning_rate);
+    println!("Learning rate: constant at {}", lr);
     println!("Total training steps: {}\n", total_steps);
 
-    // Build learner with explicit type annotations
-    // The RegressionOutput needs to sync to the same backend for metrics to work
-    let mut learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, ConstantLr>::new(artifact_dir.as_str())
-        .metric_train(CudaMetric::new())
-        .metric_valid(CudaMetric::new())
-        .metric_train_numeric(LossMetric::new())
-        .metric_valid_numeric(LossMetric::new())
-        .metric_train_numeric(LearningRateMetric::new())
-        .with_file_checkpointer(CompactRecorder::new())
-        .devices(vec![device.clone()])
-        .num_epochs(config.num_epochs)
-        .summary();
-
-    if let Some(epoch) = resume_from {
-        learner = learner.checkpoint(epoch);
-    }
-
-    // Saved before fit() so a crash mid-run still leaves the architecture
+    // Saved before training so a crash mid-run still leaves the architecture
     // behind next to the checkpoints.
     config
         .save(format!("{artifact_dir}/config.json").as_str())
         .expect("Failed to save config");
 
-    println!("Starting Build...\n");
+    // Custom loop (LearnerBuilder has no hook for "every N batches").
+    let mut model = model;
+    let mut optim = config.optimizer.init::<B, UNet<B>>();
+    let checkpoint_dir = PathBuf::from(&artifact_dir).join("checkpoint");
+    let recorder = CompactRecorder::new();
 
-    let learner = learner.build(model, config.optimizer.init(), lr_scheduler);
+    let mut start_epoch = 1;
+    if let Some(epoch) = resume_from {
+        let model_record = recorder
+            .load(checkpoint_dir.join(format!("model-{epoch}")), &device)
+            .expect("Failed to load model checkpoint");
+        model = model.load_record(model_record);
+        let optim_record = recorder
+            .load(checkpoint_dir.join(format!("optim-{epoch}")), &device)
+            .expect("Failed to load optimizer checkpoint");
+        optim = optim.load_record(optim_record);
+        start_epoch = epoch + 1;
+    }
 
-    // OPEN BUG (unverified, needs a session with an actual CUDA device to
-    // diagnose): this point was previously never reached - the process
-    // exited with no panic message and no error. The two most likely
-    // explanations, neither confirmed here: (1) the redundant dataset/batcher
-    // self-test that used to sit just above this block (now removed - it
-    // always reloaded 100 images regardless of config, ignoring
-    // total_samples entirely) was stalling or erroring before training ever
-    // started; (2) CudaDevice::default() aborting at the driver level on a
-    // machine with no CUDA-capable GPU/driver can exit the process without a
-    // Rust panic. Run with RUST_BACKTRACE=full and check the exit code if
-    // this still reproduces.
-    println!("Starting training...\n");
-    
-    println!("\nNow trying fit()...");
-    // Train the model
-    let model_trained = learner.fit(dataloader_train, dataloader_valid);
+    // Batches are counted across epochs, so "every 500" lands wherever it
+    // lands in an epoch; a resumed run continues the count.
+    let mut global_step = (start_epoch - 1) * batches_per_epoch;
+    let mut loss_log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(Path::new(&artifact_dir).join("losses.csv"))
+        .expect("Failed to open losses.csv");
+    if global_step == 0 {
+        writeln!(loss_log, "kind,epoch,step,loss").ok();
+    }
+
+    println!("Starting training at epoch {start_epoch}...\n");
+    for epoch in start_epoch..=config.num_epochs {
+        let mut epoch_loss = 0.0f64;
+        let mut epoch_batches = 0usize;
+
+        for batch in dataloader_train.iter() {
+            let output = model.forward_step(batch);
+            let loss: f32 = output.loss.clone().into_data().to_vec::<f32>().unwrap()[0];
+            let grads = GradientsParams::from_grads(output.loss.backward(), &model);
+            model = optim.step(lr, model, grads);
+
+            global_step += 1;
+            epoch_batches += 1;
+            epoch_loss += loss as f64;
+            writeln!(loss_log, "train,{epoch},{global_step},{loss}").ok();
+
+            if global_step % 50 == 0 {
+                println!(
+                    "epoch {epoch}/{} batch {epoch_batches}/{batches_per_epoch} step {global_step} loss {loss:.5} (epoch avg {:.5})",
+                    config.num_epochs,
+                    epoch_loss / epoch_batches as f64,
+                );
+            }
+
+            if config.sample_every_batches != 0 && global_step % config.sample_every_batches == 0 {
+                generate_samples(&model, &artifact_dir, global_step, config.sample_steps);
+            }
+        }
+
+        // Validation on the inner (no-autodiff) backend.
+        let model_valid = model.valid();
+        let mut valid_loss = 0.0f64;
+        let mut valid_batches = 0usize;
+        for batch in dataloader_valid.iter() {
+            let loss: f32 = model_valid.forward_step(batch).loss.into_data().to_vec::<f32>().unwrap()[0];
+            valid_loss += loss as f64;
+            valid_batches += 1;
+        }
+        let train_avg = epoch_loss / epoch_batches.max(1) as f64;
+        let valid_avg = valid_loss / valid_batches.max(1) as f64;
+        println!("=== epoch {epoch} done: train loss {train_avg:.5}, valid loss {valid_avg:.5} ===");
+        writeln!(loss_log, "train_epoch_avg,{epoch},{global_step},{train_avg}").ok();
+        writeln!(loss_log, "valid_epoch_avg,{epoch},{global_step},{valid_avg}").ok();
+        loss_log.flush().ok();
+
+        save_checkpoint::<B, _>(&checkpoint_dir, epoch, &model, &optim);
+    }
 
     println!("\nTraining complete!");
     println!("Saving model to {}", artifact_dir);
 
     // Save trained model
-    model_trained
+    model
         .save_file(
             format!("{artifact_dir}/model"),
             &NoStdTrainingRecorder::new(),
