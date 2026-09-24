@@ -709,7 +709,7 @@ pub struct UNet<B: Backend> {
     conv_out: Conv2d<B>,
     activation: Gelu,
 
-    huber_loss: HuberLoss,
+    // huber_loss: HuberLoss,
 }
 
 #[derive(Config)]
@@ -870,7 +870,7 @@ impl UNetConfig {
             .with_padding(burn::nn::PaddingConfig2d::Explicit(1, 1))
             .init(device);
 
-        let huber_loss = HuberLossConfig::new(1.35).init();
+        // let huber_loss = HuberLossConfig::new(1.35).init();
 
         UNet {
             text_encoder,
@@ -892,7 +892,7 @@ impl UNetConfig {
             norm_out,
             conv_out,
             activation: Gelu::new(),
-            huber_loss
+            // huber_loss
         }
     }
 }
@@ -961,19 +961,19 @@ impl<B: Backend> UNet<B> {
         // let predicted_noise: Tensor<B, 4> = Tensor::zeros([batch_size, channels, height, width], &device);
 
         // MSE loss between predicted noise and actual noise
-        // let loss = MseLoss::new().forward(
-        //     predicted_noise.clone(),
-        //     batch.noise.clone(),
-        //     // burn::nn::loss::Reduction::Mean,
-        //     burn::nn::loss::Reduction::Sum,
-        // );
-
-        let loss = self.huber_loss.forward(
+        let loss = MseLoss::new().forward(
             predicted_noise.clone(),
             batch.noise.clone(),
             burn::nn::loss::Reduction::Mean,
             // burn::nn::loss::Reduction::Sum,
         );
+
+        // let loss = self.huber_loss.forward(
+        //     predicted_noise.clone(),
+        //     batch.noise.clone(),
+        //     burn::nn::loss::Reduction::Mean,
+        //     // burn::nn::loss::Reduction::Sum,
+        // );
 
         // Flatten for RegressionOutput (expects 2D tensors)
         let [batch_size, channels, height, width] = predicted_noise.dims();

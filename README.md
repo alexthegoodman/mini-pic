@@ -35,6 +35,12 @@ validation split. Every native U-Net preset has four downsampling stages
 layers. Select a preset with `$env:MINI_PIC_UNET_PRESET = 'balanced'` before
 training; `balanced` is the default.
 
+To resume an interrupted native run, use the same preset and settings (the run
+folder name is derived from them) and set `$env:MINI_PIC_RESUME = 'latest'` (or
+an epoch number). Model, optimizer and scheduler state are restored from
+`checkpoint/`. Without it, a run deletes any existing folder of the same name,
+checkpoints included. `config.json` is now written before training starts.
+
 | Preset | Channel widths | ResNet blocks per down/up level |
 | --- | --- | ---: |
 | `compact` | `[8, 16, 32, 32, 32]` | 2 |

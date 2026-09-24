@@ -41,7 +41,7 @@ pub struct TrainingConfig {
     /// used to hardcode Some(100) deep inside the function regardless of any
     /// config field, so changing modes meant editing code, not config.
     // #[config(default = 0)]
-    // #[config(default = 16_000)]
+    // #[config(default = 40_000)]
     #[config(default = 1000)]
     pub total_samples: usize,
 
@@ -79,6 +79,7 @@ enum UNetPreset {
     Balanced,
     Wide,
     ExtraWide,
+    Test,
 }
 
 impl UNetPreset {
@@ -88,6 +89,7 @@ impl UNetPreset {
             "balanced" => Some(Self::Balanced),
             "wide" => Some(Self::Wide),
             "extra-wide" => Some(Self::ExtraWide),
+            "test" => Some(Self::ExtraWide),
             _ => None,
         }
     }
@@ -97,7 +99,7 @@ impl UNetPreset {
             Ok(value) => Self::parse(&value).unwrap_or_else(|| {
                 panic!("unknown MINI_PIC_UNET_PRESET '{value}'; choose compact, balanced, wide, or extra-wide")
             }),
-            Err(std::env::VarError::NotPresent) => Self::Compact,
+            Err(std::env::VarError::NotPresent) => Self::Test,
             Err(std::env::VarError::NotUnicode(_)) => {
                 panic!("MINI_PIC_UNET_PRESET must be valid Unicode")
             }
@@ -106,6 +108,7 @@ impl UNetPreset {
 
     fn name(self) -> &'static str {
         match self {
+             Self::Test => "test",
             Self::Compact => "compact",
             Self::Balanced => "balanced",
             Self::Wide => "wide",
@@ -115,6 +118,11 @@ impl UNetPreset {
 
     fn model_config(self) -> UNetConfig {
         let channels = match self {
+            // Self::Test => vec![8, 32, 64, 256, 512],
+            // Self::Test => vec![256, 128, 64, 32, 16], // slower than turtle
+            // Self::Test => vec![128, 64, 32, 16, 8],
+            // Self::Test => vec![32, 32, 32, 32, 32], // save_file crash? overflow?
+            Self::Test => vec![64, 32, 16, 8, 8],
             Self::Compact => vec![8, 16, 32, 32, 32],
             Self::Balanced => vec![16, 32, 64, 64, 64],
             Self::Wide => vec![32, 64, 128, 128, 128],
@@ -172,6 +180,36 @@ fn split_by_source(
     (train, valid)
 }
 
+/// Resolves MINI_PIC_RESUME ("latest" or an epoch number) to the epoch of a
+/// checkpoint that exists in `artifact_dir/checkpoint`, or None if unset.
+/// Panics rather than silently starting fresh: a fresh start wipes the folder.
+fn resume_epoch(artifact_dir: &str) -> Option<usize> {
+    let want = std::env::var("MINI_PIC_RESUME").ok()?;
+    let checkpoint_dir = std::path::Path::new(artifact_dir).join("checkpoint");
+    // Epochs that have all three files (model, optim, scheduler).
+    let mut complete: Vec<usize> = std::fs::read_dir(&checkpoint_dir)
+        .unwrap_or_else(|e| panic!("MINI_PIC_RESUME set but {} is unreadable: {e}", checkpoint_dir.display()))
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name().into_string().ok()?;
+            let epoch: usize = name.strip_prefix("model-")?.strip_suffix(".mpk")?.parse().ok()?;
+            ["optim", "scheduler"]
+                .iter()
+                .all(|kind| checkpoint_dir.join(format!("{kind}-{epoch}.mpk")).exists())
+                .then_some(epoch)
+        })
+        .collect();
+    complete.sort_unstable();
+
+    let epoch = if want == "latest" {
+        *complete.last().unwrap_or_else(|| panic!("no complete checkpoint in {}", checkpoint_dir.display()))
+    } else {
+        let epoch: usize = want.parse().expect("MINI_PIC_RESUME must be 'latest' or an epoch number");
+        assert!(complete.contains(&epoch), "no complete checkpoint for epoch {epoch}; have {complete:?}");
+        epoch
+    };
+    Some(epoch)
+}
+
 fn create_artifact_dir(artifact_dir: &str) {
     // Remove existing artifacts to get an accurate learner summary
     std::fs::remove_dir_all(artifact_dir).ok();
@@ -227,7 +265,13 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
     B::seed(config.seed);
 
     let artifact_dir = format!("{models_root}/{}", artifact_dir_name(&config));
-    create_artifact_dir(&artifact_dir);
+    // Resuming must not go through create_artifact_dir, which deletes the
+    // folder (checkpoints included).
+    let resume_from = resume_epoch(&artifact_dir);
+    match resume_from {
+        Some(epoch) => println!("Resuming {artifact_dir} from the epoch {epoch} checkpoint"),
+        None => create_artifact_dir(&artifact_dir),
+    }
 
     println!("=== Diffusion Model Training Configuration ===");
     println!("Artifact dir: {}", artifact_dir);
@@ -339,7 +383,7 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
 
     // Build learner with explicit type annotations
     // The RegressionOutput needs to sync to the same backend for metrics to work
-    let learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, ConstantLr>::new(artifact_dir.as_str())
+    let mut learner = LearnerBuilder::<B, RegressionOutput<B>, RegressionOutput<B::InnerBackend>, UNet<B>, _, ConstantLr>::new(artifact_dir.as_str())
         .metric_train(CudaMetric::new())
         .metric_valid(CudaMetric::new())
         .metric_train_numeric(LossMetric::new())
@@ -349,6 +393,16 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
         .devices(vec![device.clone()])
         .num_epochs(config.num_epochs)
         .summary();
+
+    if let Some(epoch) = resume_from {
+        learner = learner.checkpoint(epoch);
+    }
+
+    // Saved before fit() so a crash mid-run still leaves the architecture
+    // behind next to the checkpoints.
+    config
+        .save(format!("{artifact_dir}/config.json").as_str())
+        .expect("Failed to save config");
 
     println!("Starting Build...\n");
 
@@ -372,12 +426,7 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
     let model_trained = learner.fit(dataloader_train, dataloader_valid);
 
     println!("\nTraining complete!");
-    println!("Saving model and config to {}", artifact_dir);
-
-    // Save config
-    config
-        .save(format!("{artifact_dir}/config.json").as_str())
-        .expect("Failed to save config");
+    println!("Saving model to {}", artifact_dir);
 
     // Save trained model
     model_trained

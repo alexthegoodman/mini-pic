@@ -447,13 +447,13 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
             .select(0, timesteps_int)
             .reshape([batch_size, 1, 1, 1]);
 
-        // let noisy_images =
-        //     images.clone() * sqrt_alpha_bar + noise.clone() * sqrt_one_minus_alpha_bar;
-
-        let noise_balance_scale = 0.1;
-
         let noisy_images =
-            images.clone() * sqrt_alpha_bar + (noise.clone() * sqrt_one_minus_alpha_bar) * noise_balance_scale;
+            images.clone() * sqrt_alpha_bar + noise.clone() * sqrt_one_minus_alpha_bar;
+
+        // let noise_balance_scale = 0.1;
+
+        // let noisy_images =
+        //     images.clone() * sqrt_alpha_bar + (noise.clone() * sqrt_one_minus_alpha_bar) * noise_balance_scale;
 
         DiffusionBatch {
             images,
