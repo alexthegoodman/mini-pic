@@ -55,3 +55,16 @@ image. `model_dir` is the "Artifact dir: ..." path training printed at the start
 Inference uses the Python pipeline's deterministic DDIM update, including
 clean-image clipping at each step. Compare generated images across several
 epochs and prompts; the next training run is needed to verify quality.
+
+`cargo run --release --bin inspect_noise -- [--count N] [--out DIR] [--seed U64] [--progression-index I] [--progression-timesteps t1,t2,...]`
+dumps exactly what the real `DiffusionBatcher` (dataset.rs) feeds the model, for
+verifying training inputs independently of model output quality:
+`<out>/batch/` holds `N` real dataset items as clean/noisy/noise PNGs plus a
+per-item `log.json` entry (sampled timestep, noise schedule coefficients, tensor
+min/max/mean, a tokenizer decode round-trip of the prompt, and a
+reconstruction-error check that recovers the clean image from the noisy image
+and the known noise - isolates whether the forward-noise math itself is
+correct); `<out>/progression/` noises one fixed image at a fixed ascending
+timestep list with one frozen noise sample, saved both as individual frames and
+as a horizontal `strip.png`, so the noise level actually increasing with
+timestep is visible directly.

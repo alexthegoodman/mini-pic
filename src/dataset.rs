@@ -12,7 +12,8 @@ use tokenizers::Tokenizer;
 
 // Constants
 pub const IMAGE_SIZE: usize = 64;
-pub const GRID_SIZE: usize = 64 * 4;
+// pub const GRID_SIZE: usize = 64 * 4; //4x4
+pub const GRID_SIZE: usize = 64 * 2; //2x2
 pub const IMAGE_CHANNELS: usize = 3;
 pub const MAX_SEQ_LEN: usize = 77; // CLIP standard
 pub const NUM_TIMESTEPS: usize = 1000;
@@ -93,6 +94,14 @@ impl TextTokenizer {
 
     pub fn vocab_size(&self) -> usize {
         self.tokenizer.get_vocab_size(true)
+    }
+
+    /// Decode token ids back to text, for round-tripping a tokenized prompt
+    /// to check it against the original string (used by inspect_noise).
+    pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String, Box<dyn std::error::Error>> {
+        self.tokenizer
+            .decode(ids, skip_special_tokens)
+            .map_err(|e| format!("Failed to decode tokens: {:?}", e).into())
     }
 }
 
@@ -420,6 +429,8 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
             Tensor::<B, 1, Int>::from_ints(timesteps_vec.as_slice(), device);
         let timesteps = timesteps_int.clone().float();
 
+        // TODO: no use of get_noise_params? as in inspect_noise?
+
         // Generate noise
         let noise = Tensor::<B, 4>::random_like(&images, burn::tensor::Distribution::Normal(0.0, 1.0));
 
@@ -436,8 +447,13 @@ impl<B: Backend> Batcher<B, DiffusionItem, DiffusionBatch<B>> for DiffusionBatch
             .select(0, timesteps_int)
             .reshape([batch_size, 1, 1, 1]);
 
+        // let noisy_images =
+        //     images.clone() * sqrt_alpha_bar + noise.clone() * sqrt_one_minus_alpha_bar;
+
+        let noise_balance_scale = 0.1;
+
         let noisy_images =
-            images.clone() * sqrt_alpha_bar + noise.clone() * sqrt_one_minus_alpha_bar;
+            images.clone() * sqrt_alpha_bar + (noise.clone() * sqrt_one_minus_alpha_bar) * noise_balance_scale;
 
         DiffusionBatch {
             images,

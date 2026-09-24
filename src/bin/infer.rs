@@ -59,27 +59,30 @@ use mini_pic::inference::DiffusionInference;
 // Edit these to whatever you want to sample. Order matches the grid
 // left-to-right, top-to-bottom (index 0 = row 0 col 0, index 4 = row 1 col 0,
 // etc). Must have exactly GRID_ROWS * GRID_COLS entries.
-const PROMPTS: [&str; 16] = [
-    "doom eternal, game concept art, veins and worms, muscular, crustacean exoskeleton",
-    "a beautiful very detailed highly detailed building ranch by frank gehry, galactic darkacademia tron dramatic lighting studio ghibli",
-    "a beautiful ultradetailed anime illustration of unknown backroom level nature by bjarke ingels",
-    "hyperrealistic portrait of a philippine baby character in a scenic environment, flowers, by beksinski zdzislaw, buchholz, quint, yoro sean",
-    "a yellow flower in a field",
-    "a wooden boat on a lake",
-    "a city street at night",
-    "a cat sitting on a chair",
-    "a cup of coffee on a desk",
-    "a beach with palm trees",
-    "a bowl of fresh fruit",
-    "a bicycle leaning on a wall",
-    "a candle burning in the dark",
-    "a river through a canyon",
-    "a bird perched on a branch",
-    "a bouquet of purple flowers",
+const PROMPTS: [&str; 4] = [
+    // "doom eternal, game concept art, veins and worms, muscular, crustacean exoskeleton",
+    // "a beautiful very detailed highly detailed building ranch by frank gehry, galactic darkacademia tron dramatic lighting studio ghibli",
+    // "a beautiful ultradetailed anime illustration of unknown backroom level nature by bjarke ingels",
+    // "hyperrealistic portrait of a philippine baby character in a scenic environment, flowers, by beksinski zdzislaw, buchholz, quint, yoro sean",
+    "low contrast, washed out, stargate made of stone that form a circle, cinematic view, epic sky, detailed, concept art, low angle, high detail, warm lighting, volumetric, godrays, vivid, beautiful, trending on artstation, by jordan grimmer",
+    "upside down, flipped vertically, a wholesome animation key shot of masculine lynx - headed navigator, navigation deck of nostromo, studio ghibli, pixar and disney animation, sharp, disney concept art watercolor illustration by mandy jurgens and alphonse mucha and alena aenami, pastel color palette, dramatic lighting, highly detailed",
+    // "portrait of a cloaked female devil, evil, ominous, luscious, pointy teeth, stunning, detailed, by artgerm, by greg rutkowski, by luis royo, by pixar, by myazaki, gothic, final fantasy, fantasy, medieval",
+    // "low contrast, washed out, by maxfield parrish, greg manchess, mucha",
+    // "very blurry, heavily out of focus, poignant portrait black and white photo of an old couple smiling at each other, nostalgia, love",
+    // "dark, underexposed, a geometrical portrait of a knave, fractal flowering background, digital art, analogous colours, trending on artstation",
+    // "bright, overexposed, man in tux with a giant cheeseburger head highly detailed ink drawing by junji ito",
+    "realistic corgi, intricate paper quilling, swirls, spirals, white background",
+    "a dog",
+    // "a cat",
+    // "a bird",
+    // "a person",
 ];
 
-const GRID_ROWS: usize = 4;
-const GRID_COLS: usize = 4;
+// const GRID_ROWS: usize = 4;
+// const GRID_COLS: usize = 4;
+
+const GRID_ROWS: usize = 2;
+const GRID_COLS: usize = 2;
 
 fn main() {
     const _: () = assert!(PROMPTS.len() == GRID_ROWS * GRID_COLS);

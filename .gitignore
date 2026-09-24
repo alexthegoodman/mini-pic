@@ -5,3 +5,4 @@ nul
 **/__pycache__
 **/.venv
 *.png
+/noise-inspection

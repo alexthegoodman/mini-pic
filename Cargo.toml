@@ -34,3 +34,7 @@ path = "src/bin/augment.rs"
 [[bin]]
 name = "infer"
 path = "src/bin/infer.rs"
+
+[[bin]]
+name = "inspect_noise"
+path = "src/bin/inspect_noise.rs"

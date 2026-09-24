@@ -23,7 +23,8 @@ pub struct TrainingConfig {
     pub num_epochs: usize,
 
     // #[config(default = 16)]
-    #[config(default = 8)]
+    // #[config(default = 8)]
+    #[config(default = 4)]
     pub batch_size: usize,
 
     #[config(default = 4)]
@@ -40,11 +41,14 @@ pub struct TrainingConfig {
     /// used to hardcode Some(100) deep inside the function regardless of any
     /// config field, so changing modes meant editing code, not config.
     // #[config(default = 0)]
-    #[config(default = 16_000)]
+    // #[config(default = 16_000)]
+    #[config(default = 1000)]
     pub total_samples: usize,
 
     // Learning rate schedule
-    #[config(default = 1e-4)]
+    #[config(default = 1e-4)] // seems moderate
+    // #[config(default = 1e-5)] // seems quite slow at the start
+    // #[config(default = 1e-3)]
     pub learning_rate: f64,
 
     // Optimizer
@@ -93,7 +97,7 @@ impl UNetPreset {
             Ok(value) => Self::parse(&value).unwrap_or_else(|| {
                 panic!("unknown MINI_PIC_UNET_PRESET '{value}'; choose compact, balanced, wide, or extra-wide")
             }),
-            Err(std::env::VarError::NotPresent) => Self::Wide,
+            Err(std::env::VarError::NotPresent) => Self::Compact,
             Err(std::env::VarError::NotUnicode(_)) => {
                 panic!("MINI_PIC_UNET_PRESET must be valid Unicode")
             }
@@ -121,7 +125,7 @@ impl UNetPreset {
             .with_vocab_size(4096) // Replaced with the loaded tokenizer's size.
             .with_text_embed_dim(64)
             .with_text_encoder_layers(8)
-            .with_time_embed_dim(32)
+            .with_time_embed_dim(128)
             .with_use_mid_attn(true)
             .with_resnet_blocks_per_level(2)
     }
@@ -187,10 +191,11 @@ fn artifact_dir_name(config: &TrainingConfig) -> String {
         .join("-");
 
     format!(
-        "mini-pic_ch{channels}_res{res}_temb{temb}_tl{tl}_th{th}_ep{ep}_bs{bs}_lr{lr:.0e}_size{count}",
+        "mini-pic_ch{channels}_res{res}_te-emb{temb}_ti-emd{tiemb}_tl{tl}_th{th}_ep{ep}_bs{bs}_lr{lr:.0e}_size{count}",
         channels = channels,
         res = config.model.resnet_blocks_per_level,
         temb = config.model.text_embed_dim,
+        tiemb = config.model.time_embed_dim,
         tl = config.model.text_encoder_layers,
         th = config.model.text_encoder_heads,
         ep = config.num_epochs,
@@ -265,6 +270,10 @@ pub fn run<B: AutodiffBackend>(models_root: &str, device: B::Device) {
     let valid_size = valid_items.len();
     assert!(train_size > 0 && valid_size > 0, "training needs at least two source images");
     println!("Splitting {} samples by source image: {} train, {} valid", total_loaded, train_size, valid_size);
+
+    for item in &train_items[0..20] {
+        println!("training prompt {:?}", item.metadata.prompt);
+    }
 
     let train_dataset = DiffusionDataset {
         items: train_items,
