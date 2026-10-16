@@ -637,19 +637,23 @@ class DiffusionGANTrainer:
         for i, prompt in enumerate(prompts):
             print(f"  {i+1}. {prompt[:80]}...")
 
-        images = generate_samples(
-            self.generator,
-            self.tokenizer,
-            prompts,
-            device=self.config.device,
-            num_samples=self.config.num_samples_per_prompt,
-            use_ddim=self.config.use_ddim,
-            ddim_steps=self.config.ddim_steps,
-        )
+        # Generate images and save grid
+        try:
+            images = generate_samples(
+                self.generator,
+                self.tokenizer,
+                prompts,
+                device=self.config.device,
+                num_samples=self.config.num_samples_per_prompt,
+                use_ddim=self.config.use_ddim,
+                ddim_steps=self.config.ddim_steps,
+            )
 
-        output_path = samples_dir / f"epoch_{epoch:03d}.png"
-        save_image_grid(images, str(output_path), nrow=self.config.num_samples_per_prompt)
-        print(f"Saved samples to {output_path}\n")
+            output_path = samples_dir / f"epoch_{epoch:03d}.png"
+            save_image_grid(images, str(output_path), nrow=self.config.num_samples_per_prompt)
+            print(f"Saved samples to {output_path}\n")
+        except Exception as e:
+            print(f"Warning: Failed to generate/save sample images for epoch {epoch}: {e}\n")
 
     def train(self):
         """Main training loop"""

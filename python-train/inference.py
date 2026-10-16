@@ -2,6 +2,7 @@
 import torch
 import torch.nn.functional as F
 from typing import Optional
+from pathlib import Path
 import numpy as np
 from PIL import Image
 from dataloader import NoiseSchedule, IMAGE_SIZE, IMAGE_CHANNELS
@@ -191,24 +192,35 @@ def tensor_to_pil(images: torch.Tensor) -> list[Image.Image]:
 
 def save_image_grid(images: torch.Tensor, path: str, nrow: int = 8):
     """
-    Save images as a grid
+    Save images as a grid using NumPy and PIL (no torchvision dependency).
 
     Args:
         images: [batch, 3, 64, 64] in range [-1, 1]
         path: Output path
         nrow: Number of images per row
     """
-    from torchvision.utils import make_grid
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Denormalize from [-1, 1] to [0, 1]
-    images = (images + 1.0) / 2.0
+    # Denormalize from [-1, 1] to [0, 255] uint8 and transpose to (N, H, W, C)
+    images_denorm = ((images + 1.0) * 127.5).clamp(0, 255).to(torch.uint8)
+    imgs_np = images_denorm.cpu().numpy().transpose(0, 2, 3, 1)
 
-    # Create grid
-    grid = make_grid(images, nrow=nrow, padding=2, normalize=False)
+    n, h, w, c = imgs_np.shape
+    ncol = min(n, nrow) if nrow > 0 else 1
+    nrows = (n + ncol - 1) // ncol
+    padding = 2
 
-    # Convert to PIL and save
-    grid = (grid * 255).clamp(0, 255).to(torch.uint8)
-    grid = grid.cpu().numpy().transpose(1, 2, 0)
+    grid_h = nrows * h + (nrows + 1) * padding
+    grid_w = ncol * w + (ncol + 1) * padding
+    grid = np.zeros((grid_h, grid_w, c), dtype=np.uint8)
+
+    for idx in range(n):
+        r = idx // ncol
+        col = idx % ncol
+        y = padding + r * (h + padding)
+        x = padding + col * (w + padding)
+        grid[y:y + h, x:x + w] = imgs_np[idx]
+
     Image.fromarray(grid).save(path)
 
 
