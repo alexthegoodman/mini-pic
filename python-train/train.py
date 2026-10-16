@@ -15,15 +15,52 @@ from model import UNet
 from dataloader import create_dataloader, DiffusionDataset
 
 
+def resolve_default_paths():
+    """Resolve data root, tokenizer, and checkpoint directories across environments"""
+    # 1. Dataset directory
+    data_root = os.environ.get("MINI_PIC_DATA_ROOT")
+    if data_root:
+        root_path = Path(data_root)
+        if root_path.name == "images-64-augmented" or (root_path / "part-000001.json").exists():
+            dataset_dir = str(root_path)
+        else:
+            dataset_dir = str(root_path / "images-64-augmented")
+    elif Path("data/DiffusionDB/images-64-augmented").exists():
+        dataset_dir = "data/DiffusionDB/images-64-augmented"
+    elif Path("data/images-64-augmented").exists():
+        dataset_dir = "data/images-64-augmented"
+    elif Path("../data/DiffusionDB/images-64-augmented").exists():
+        dataset_dir = "../data/DiffusionDB/images-64-augmented"
+    else:
+        dataset_dir = "D:/DiffusionDB/images-64-augmented"
+
+    # 2. Tokenizer path
+    tokenizer = os.environ.get("TOKENIZER_PATH")
+    if not tokenizer:
+        if Path("tokenizer.json").exists():
+            tokenizer = "tokenizer.json"
+        elif Path("../tokenizer.json").exists():
+            tokenizer = "../tokenizer.json"
+        else:
+            tokenizer = "tokenizer.json"
+
+    # 3. Checkpoint directory (/workspace/checkpoints on RunPod persistent volume)
+    checkpoint = os.environ.get("CHECKPOINT_DIR")
+    if not checkpoint:
+        checkpoint = "/workspace/checkpoints" if Path("/workspace").exists() else "./checkpoints"
+
+    return dataset_dir, tokenizer, checkpoint
+
+
 class TrainingConfig:
     """Training configuration"""
     def __init__(
         self,
         # Paths
-        json_dir: str = str(Path(os.environ.get("MINI_PIC_DATA_ROOT", "D:/DiffusionDB")) / "images-64-augmented"),
-        image_dir: str = str(Path(os.environ.get("MINI_PIC_DATA_ROOT", "D:/DiffusionDB")) / "images-64-augmented"),
-        tokenizer_path: str = "../tokenizer.json",
-        checkpoint_dir: str = "./checkpoints",
+        json_dir: str = None,
+        image_dir: str = None,
+        tokenizer_path: str = None,
+        checkpoint_dir: str = None,
 
         # Dataset
         max_samples: int = None,  # None = load all
@@ -70,10 +107,11 @@ class TrainingConfig:
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         seed: int = 1337,
     ):
-        self.json_dir = json_dir
-        self.image_dir = image_dir
-        self.tokenizer_path = tokenizer_path
-        self.checkpoint_dir = checkpoint_dir
+        default_dataset, default_tokenizer, default_checkpoint = resolve_default_paths()
+        self.json_dir = json_dir or default_dataset
+        self.image_dir = image_dir or default_dataset
+        self.tokenizer_path = tokenizer_path or default_tokenizer
+        self.checkpoint_dir = checkpoint_dir or default_checkpoint
 
         self.max_samples = max_samples
         self.train_ratio = train_ratio
@@ -357,7 +395,7 @@ class Trainer:
 
         # Create samples directory
         samples_dir = Path(self.config.checkpoint_dir) / "samples"
-        samples_dir.mkdir(exist_ok=True)
+        samples_dir.mkdir(parents=True, exist_ok=True)
 
         # Get prompts
         if self.config.sample_prompts:
@@ -437,10 +475,19 @@ def main():
     were tried and rejected go in the comment next to the winner, not as a
     second commented-out line that could be un-commented back into drift.
     """
+    import argparse
+    parser = argparse.ArgumentParser(description="Train text-conditioned diffusion model")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of epochs to train")
+    parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
+    parser.add_argument("--max-samples", type=int, default=None, help="Max samples to load")
+    parser.add_argument("--checkpoint-dir", type=str, default=None, help="Checkpoint output directory")
+    args, _ = parser.parse_known_args()
+
     config = TrainingConfig(
-        max_samples=320000,  # None loads the full ~1.4M for production runs
-        num_epochs=50,
-        batch_size=16,  # good sweet spot for quality and speed; 32/64 tried, slower per-batch with no quality gain
+        max_samples=args.max_samples if args.max_samples is not None else 320000,  # None loads the full ~1.4M for production runs
+        num_epochs=args.epochs if args.epochs is not None else 50,
+        batch_size=args.batch_size if args.batch_size is not None else 16,  # good sweet spot for quality and speed; 32/64 tried, slower per-batch with no quality gain
+        checkpoint_dir=args.checkpoint_dir,
         learning_rate=1e-4,  # standard diffusion LR; matches the class default and resume_train.py
         warmup_steps=500,  # warms up to lr over 500 batches, then decays back down over the rest of training
 

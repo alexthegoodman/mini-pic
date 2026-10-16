@@ -50,6 +50,32 @@ The training script will:
 uv run python generate.py --checkpoint checkpoints/best_model.pt --prompts "a sunset over mountains" "cyberpunk city" --num_samples 4 --output my_generation.png
 ```
 
+## RunPod Training (Docker)
+
+To train on RunPod with GPU acceleration:
+
+### 1. Build and Push the Docker Image
+
+From the `mini-pic/python-train` directory:
+
+```bash
+docker build -t alexthegoodman/mini-pic-train:latest .
+docker push alexthegoodman/mini-pic-train:latest
+```
+
+The Docker image packages:
+- Base: RunPod PyTorch CUDA 13 template (`runpod/pytorch:1.0.3-cu1300-torch291-ubuntu2404` or `runpod/base:1.4.0-cuda1320-ubuntu2404`)
+- Augmented 64x64 dataset (`data/DiffusionDB/images-64-augmented`, ~1GB)
+- Tokenizer (`tokenizer.json`)
+- Training scripts with unbuffered streaming logs and automatic preflight verification
+
+### 2. Deploy on RunPod
+
+1. Deploy a Pod using your image (`alexthegoodman/mini-pic-train:latest`).
+2. Attach a RunPod Network Volume mounted to `/workspace`.
+3. Checkpoints (`best_model.pt`, regular epoch checkpoints, `config.json`) and sample images (`samples/epoch_*.png`) are automatically saved to `/workspace/checkpoints/` so they persist across pod restarts.
+4. The pod automatically begins training with `python3 train.py`. To run GAN training instead, set the pod command to `python3 train_diffusion_gan.py`.
+
 ## Sample Generation During Training
 
 The training script automatically generates sample images to track progress!

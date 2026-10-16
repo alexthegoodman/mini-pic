@@ -82,15 +82,52 @@ class PatchGANDiscriminator(nn.Module):
 # Training Configuration
 # ============================================================================
 
+def resolve_default_paths(default_checkpoint_folder="checkpoints_gan"):
+    """Resolve data root, tokenizer, and checkpoint directories across environments"""
+    # 1. Dataset directory
+    data_root = os.environ.get("MINI_PIC_DATA_ROOT")
+    if data_root:
+        root_path = Path(data_root)
+        if root_path.name == "images-64-augmented" or (root_path / "part-000001.json").exists():
+            dataset_dir = str(root_path)
+        else:
+            dataset_dir = str(root_path / "images-64-augmented")
+    elif Path("data/DiffusionDB/images-64-augmented").exists():
+        dataset_dir = "data/DiffusionDB/images-64-augmented"
+    elif Path("data/images-64-augmented").exists():
+        dataset_dir = "data/images-64-augmented"
+    elif Path("../data/DiffusionDB/images-64-augmented").exists():
+        dataset_dir = "../data/DiffusionDB/images-64-augmented"
+    else:
+        dataset_dir = "D:/DiffusionDB/images-64-augmented"
+
+    # 2. Tokenizer path
+    tokenizer = os.environ.get("TOKENIZER_PATH")
+    if not tokenizer:
+        if Path("tokenizer.json").exists():
+            tokenizer = "tokenizer.json"
+        elif Path("../tokenizer.json").exists():
+            tokenizer = "../tokenizer.json"
+        else:
+            tokenizer = "tokenizer.json"
+
+    # 3. Checkpoint directory
+    checkpoint = os.environ.get("CHECKPOINT_DIR")
+    if not checkpoint:
+        checkpoint = f"/workspace/{default_checkpoint_folder}" if Path("/workspace").exists() else f"./{default_checkpoint_folder}"
+
+    return dataset_dir, tokenizer, checkpoint
+
+
 class DiffusionGANConfig:
     """Training configuration for diffusion + GAN"""
     def __init__(
         self,
         # Paths
-        json_dir: str = str(Path(os.environ.get("MINI_PIC_DATA_ROOT", "D:/DiffusionDB")) / "images-64-augmented"),
-        image_dir: str = str(Path(os.environ.get("MINI_PIC_DATA_ROOT", "D:/DiffusionDB")) / "images-64-augmented"),
-        tokenizer_path: str = "../tokenizer.json",
-        checkpoint_dir: str = "./checkpoints_gan",
+        json_dir: str = None,
+        image_dir: str = None,
+        tokenizer_path: str = None,
+        checkpoint_dir: str = None,
 
         # Dataset
         max_samples: int = None,
@@ -151,10 +188,11 @@ class DiffusionGANConfig:
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         seed: int = 1337,
     ):
-        self.json_dir = json_dir
-        self.image_dir = image_dir
-        self.tokenizer_path = tokenizer_path
-        self.checkpoint_dir = checkpoint_dir
+        default_dataset, default_tokenizer, default_checkpoint = resolve_default_paths("checkpoints_gan")
+        self.json_dir = json_dir or default_dataset
+        self.image_dir = image_dir or default_dataset
+        self.tokenizer_path = tokenizer_path or default_tokenizer
+        self.checkpoint_dir = checkpoint_dir or default_checkpoint
 
         self.max_samples = max_samples
         self.train_ratio = train_ratio
@@ -586,7 +624,7 @@ class DiffusionGANTrainer:
         from inference import generate_samples, save_image_grid
 
         samples_dir = Path(self.config.checkpoint_dir) / "samples"
-        samples_dir.mkdir(exist_ok=True)
+        samples_dir.mkdir(parents=True, exist_ok=True)
 
         if self.config.sample_prompts:
             prompts = self.config.sample_prompts
@@ -661,11 +699,20 @@ class DiffusionGANTrainer:
 
 def main():
     """Main training function"""
+    import argparse
+    parser = argparse.ArgumentParser(description="Train text-conditioned diffusion GAN model")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of epochs to train")
+    parser.add_argument("--batch-size", type=int, default=None, help="Batch size")
+    parser.add_argument("--max-samples", type=int, default=None, help="Max samples to load")
+    parser.add_argument("--checkpoint-dir", type=str, default=None, help="Checkpoint output directory")
+    args, _ = parser.parse_known_args()
+
     config = DiffusionGANConfig(
         # Dataset
-        max_samples=80000,
-        num_epochs=100,
-        batch_size=16,
+        max_samples=args.max_samples if args.max_samples is not None else 80000,
+        num_epochs=args.epochs if args.epochs is not None else 100,
+        batch_size=args.batch_size if args.batch_size is not None else 16,
+        checkpoint_dir=args.checkpoint_dir,
 
         # Optimizer
         gen_learning_rate=1e-4,

@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+checkpoints/
+checkpoints_gan/
+*.pt
+*.png
+.git/
+.gitignore
+.claude/
+.python-version
+uv.lock
+
+# Exclude unaugmented / raw images if present in data
+data/DiffusionDB/images/
+data/DiffusionDB/images-64/
+data/DiffusionDB/large/

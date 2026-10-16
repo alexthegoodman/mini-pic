@@ -48,8 +48,13 @@ def main():
     """Resume training from latest checkpoint"""
     # Reload the exact config the checkpoint was trained with; only
     # duration/logging knobs are safe to override here.
+    import os
+    checkpoint_dir = os.environ.get(
+        "CHECKPOINT_DIR",
+        "/workspace/checkpoints" if Path("/workspace").exists() else "./checkpoints"
+    )
     config = load_resumed_config(
-        "./checkpoints",
+        checkpoint_dir,
         num_epochs=50,
         sample_interval=5,
     )

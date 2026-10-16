@@ -57,7 +57,7 @@ def test_model():
     loss.backward()
     print("Backward pass successful!")
 
-    print("\n✓ All tests passed!")
+    print("\n[OK] All tests passed!")
 
 if __name__ == "__main__":
     test_model()

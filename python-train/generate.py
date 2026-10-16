@@ -1,4 +1,5 @@
 """Standalone script to generate images from trained model"""
+import os
 import torch
 import argparse
 from pathlib import Path
@@ -45,9 +46,13 @@ def load_model(checkpoint_path: str, device: str = "cuda") -> UNet:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate images from trained diffusion model")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/best_model.pt",
+    default_ckpt_dir = os.environ.get("CHECKPOINT_DIR", "/workspace/checkpoints" if Path("/workspace").exists() else "./checkpoints")
+    default_ckpt = os.environ.get("CHECKPOINT_PATH", str(Path(default_ckpt_dir) / "best_model.pt"))
+    default_tokenizer = os.environ.get("TOKENIZER_PATH", "tokenizer.json" if Path("tokenizer.json").exists() else "../tokenizer.json")
+
+    parser.add_argument("--checkpoint", type=str, default=default_ckpt,
                        help="Path to model checkpoint")
-    parser.add_argument("--tokenizer", type=str, default="../tokenizer.json",
+    parser.add_argument("--tokenizer", type=str, default=default_tokenizer,
                        help="Path to tokenizer")
     parser.add_argument("--prompts", type=str, nargs="+",
                        default=["a beautiful sunset over the ocean",

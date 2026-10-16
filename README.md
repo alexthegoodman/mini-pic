@@ -21,8 +21,8 @@ output PNGs, so check available disk space before running augmentation.
 
 To use a different folder on D:, set `$env:MINI_PIC_DATA_ROOT = 'D:\your-folder'`
 before running the commands. That folder must contain an `images` directory
-with extracted PNG and `part-*.json` files. The Rust and Python training
-defaults use the same augmented output folder.
+with extracted PNG and `part-*.json` files. The Rust and Python training defaults use the same augmented output folder.
+For PyTorch GPU training on RunPod (packaged with Docker and the 64x64 augmented dataset), see [python-train/README.md](python-train/README.md).
 
 
 `cargo run --release --bin mini-pic` to train
